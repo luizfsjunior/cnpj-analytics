@@ -52,7 +52,9 @@ copy_zips() {
     fi
     for z in "${files[@]}"; do
         echo ">> COPY $(basename "$z") -> staging.$table"
-        unzip -p "$z" | "${PSQL[@]}" -c "\copy staging.$table FROM STDIN $COPY_OPTS"
+        # tr -d '\000': remove bytes NUL que aparecem em alguns campos da Receita
+        # (ex.: complemento) e quebram o COPY com "unterminated CSV quoted field".
+        unzip -p "$z" | tr -d '\000' | "${PSQL[@]}" -c "\copy staging.$table FROM STDIN $COPY_OPTS"
     done
 }
 
@@ -71,7 +73,7 @@ copy_zips_match() {
     for z in "${files[@]}"; do
         echo ">> MATCH $(basename "$z") -> staging.$table"
         # rg sai !=0 quando não há match no zip — tolerar com || true
-        ( unzip -p "$z" | rg -f "$patterns" || true ) \
+        ( unzip -p "$z" | tr -d '\000' | rg -f "$patterns" || true ) \
             | "${PSQL[@]}" -c "\copy staging.$table FROM STDIN $COPY_OPTS"
     done
 }
@@ -99,7 +101,7 @@ if [ "$SAMPLE" -gt 0 ]; then
     [ -n "$estab_zip" ] || { echo "!! sem Estabelecimentos*.zip"; exit 1; }
     echo ">> SAMPLE head -$SAMPLE $(basename "$estab_zip") -> staging.estabelecimentos"
     set +o pipefail
-    unzip -p "$estab_zip" | head -n "$SAMPLE" \
+    unzip -p "$estab_zip" | tr -d '\000' | head -n "$SAMPLE" \
         | "${PSQL[@]}" -c "\copy staging.estabelecimentos FROM STDIN $COPY_OPTS"
     set -o pipefail
 
