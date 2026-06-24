@@ -28,7 +28,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /stats/capital-por-natureza", a.capitalPorNatureza)
 	mux.HandleFunc("GET /stats/empresas", a.statsEmpresas)
-	mux.HandleFunc("GET /empresas/{cnpj_basico}", a.empresaDetalhe)
+	mux.HandleFunc("GET /empresas/{cnpj}", a.empresaDetalhe)
 	mux.HandleFunc("GET /socios", a.socios)
 	return logging(mux)
 }

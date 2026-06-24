@@ -43,14 +43,19 @@ go run ./cmd/api          # ou: docker compose up --build api
 | GET | `/healthz` | Liveness + ping no banco |
 | GET | `/stats/capital-por-natureza?limit=10` | Ranking de capital social por natureza jurídica (via materialized view) |
 | GET | `/stats/empresas?uf=SP&cnae=6201501&situacao=2` | Contagem de estabelecimentos com filtros opcionais |
-| GET | `/empresas/{cnpj_basico}` | Empresa + estabelecimentos + QSA (8 dígitos) |
+| GET | `/empresas/{cnpj}` | **8 dígitos** → empresa + estabelecimentos + QSA; **14 dígitos** → a filial específica (endereço, contato, empresa-mãe) |
 | GET | `/socios?doc=***846761**&limit=50` | Rede societária: empresas vinculadas a um documento de sócio |
+
+> A rota `/empresas/{cnpj}` ramifica pelo tamanho do CNPJ: 8 dígitos consulta o grão
+> **empresa** (básico, com todas as filiais), 14 dígitos consulta o grão
+> **estabelecimento** (uma filial). Qualquer outro tamanho retorna `400`.
 
 ### Exemplos
 
 ```bash
 curl 'http://localhost:8001/stats/empresas?uf=DF&situacao=2'
 curl 'http://localhost:8001/stats/capital-por-natureza?limit=5'
-curl 'http://localhost:8001/empresas/33683111'
+curl 'http://localhost:8001/empresas/52809343'         # 8 díg.: empresa + filiais
+curl 'http://localhost:8001/empresas/52809343002572'   # 14 díg.: uma filial
 curl 'http://localhost:8001/socios?doc=***846761**'
 ```
