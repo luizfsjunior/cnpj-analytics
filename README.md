@@ -61,6 +61,20 @@ Veja [`TESTING.md`](TESTING.md) para uma bateria de `curl` cobrindo todos os end
 > **empresa** (básico, com todas as filiais), 14 dígitos consulta o grão
 > **estabelecimento** (uma filial). Qualquer outro tamanho retorna `400`.
 
+### Parâmetros (query string)
+
+| Rota | Parâmetro | Tipo | Obrigatório | Default | Observação |
+|---|---|---|---|---|---|
+| `/stats/empresas` | `uf` | texto (2 letras) | não | — | filtra por UF, ex. `SP` |
+| `/stats/empresas` | `cnae` | inteiro | não | — | CNAE fiscal principal, ex. `6201501` |
+| `/stats/empresas` | `situacao` | inteiro | não | — | situação cadastral: `2`=ativa, `8`=baixada, `3`=suspensa, `4`=inapta, `1`=nula |
+| `/stats/capital-por-natureza` | `limit` | inteiro | não | `10` | teto `200` |
+| `/socios` | `doc` | texto | **sim** | — | documento do sócio (mascarado), ex. `***509360**` |
+| `/socios` | `limit` | inteiro | não | `50` | teto `500` |
+
+Os filtros de `/stats/empresas` são **combináveis** (AND). Valores não numéricos em
+`cnae`/`situacao` são ignorados; `limit` inválido cai no default.
+
 ### Exemplos
 
 ```bash
