@@ -159,6 +159,48 @@ func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico, h
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// filialDetalhe: dados SÓ daquela filial pelo CNPJ completo (14 dígitos).
+// GET /filial/{cnpj}?uf=SP — passar a UF habilita partition pruning (mais rápido).
+func (a *App) filialDetalhe(w http.ResponseWriter, r *http.Request) {
+	cnpj := r.PathValue("cnpj")
+	if len(cnpj) != 14 {
+		writeError(w, http.StatusBadRequest, "cnpj deve ter 14 dígitos")
+		return
+	}
+	q := `
+		SELECT est.cnpj, est.cnpj_basico, e.razao_social, est.nome_fantasia,
+		       mf.descricao AS matriz_filial, sit.descricao AS situacao,
+		       est.data_situacao_cadastral, est.data_inicio_atividade,
+		       c.descricao AS cnae_principal,
+		       est.tipo_logradouro, est.logradouro, est.numero, est.complemento,
+		       est.bairro, est.cep, m.nome AS municipio, est.uf,
+		       est.ddd_telefone_1, est.email,
+		       e.capital_social, n.descricao AS natureza_juridica
+		FROM analytics.estabelecimento est
+		LEFT JOIN analytics.empresa e ON e.cnpj_basico = est.cnpj_basico
+		LEFT JOIN analytics.dim_municipio m ON m.codigo = est.municipio_cod
+		LEFT JOIN analytics.dim_situacao_cadastral sit ON sit.codigo = est.situacao_cadastral
+		LEFT JOIN analytics.dim_matriz_filial mf ON mf.codigo = est.matriz_filial
+		LEFT JOIN analytics.dim_cnae c ON c.codigo = est.cnae_fiscal_principal
+		LEFT JOIN analytics.dim_natureza_juridica n ON n.codigo = e.natureza_juridica_cod
+		WHERE est.cnpj = $1`
+	args := []any{cnpj}
+	if uf := r.URL.Query().Get("uf"); uf != "" {
+		args = append(args, uf)
+		q += " AND est.uf = $2" // partition pruning: varre só a partição da UF
+	}
+	rows, err := a.queryRows(r.Context(), q, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(rows) == 0 {
+		writeError(w, http.StatusNotFound, "filial não encontrada")
+		return
+	}
+	writeJSON(w, http.StatusOK, rows[0])
+}
+
 // socios: rede societária — empresas vinculadas a um documento de sócio.
 // GET /socios?doc=***846761**
 func (a *App) socios(w http.ResponseWriter, r *http.Request) {

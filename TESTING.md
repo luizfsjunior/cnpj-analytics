@@ -57,6 +57,15 @@ correspondente vem com `consultado: true` e o topo traz `cnpj_consultado`.
 curl --noproxy '*' http://localhost:8001/empresas/52809343002572
 ```
 
+## 3b. Filial isolada (`/filial/{14díg}`)
+
+Retorna **só aquela filial** + empresa-mãe. Passar `uf` faz partition pruning (mais rápido).
+
+```bash
+curl --noproxy '*' http://localhost:8001/filial/52809343002572
+curl --noproxy '*' 'http://localhost:8001/filial/52809343002572?uf=SP'   # recomendado
+```
+
 ## 4. Validação de tamanho (erros esperados)
 
 ```bash
