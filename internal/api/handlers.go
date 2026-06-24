@@ -63,23 +63,28 @@ func (a *App) statsEmpresas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rows[0])
 }
 
-// empresaDetalhe atende GET /empresas/{cnpj} e ramifica pelo tamanho:
-//   - 8 dígitos  -> empresa + estabelecimentos + QSA (grão empresa)
-//   - 14 dígitos -> a filial específica (grão estabelecimento)
+// empresaDetalhe atende GET /empresas/{cnpj} e mostra SEMPRE a visão completa
+// (empresa + estabelecimentos + QSA + Simples), aceite-se o CNPJ básico (8 díg.)
+// ou o CNPJ completo (14 díg.). Com 14 dígitos, deriva o básico e marca a filial
+// consultada (`consultado: true` + `cnpj_consultado` no topo).
 func (a *App) empresaDetalhe(w http.ResponseWriter, r *http.Request) {
 	cnpj := r.PathValue("cnpj")
+	var basico, highlight string
 	switch len(cnpj) {
 	case 8:
-		a.empresaPorBasico(w, r, cnpj)
+		basico = cnpj
 	case 14:
-		a.estabelecimentoDetalhe(w, r, cnpj)
+		basico, highlight = cnpj[:8], cnpj
 	default:
 		writeError(w, http.StatusBadRequest, "cnpj deve ter 8 (básico) ou 14 dígitos")
+		return
 	}
+	a.empresaPorBasico(w, r, basico, highlight)
 }
 
-// empresaPorBasico: empresa + estabelecimentos + sócios de um CNPJ básico (8 díg.).
-func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico string) {
+// empresaPorBasico monta a visão completa da empresa. `highlight` (CNPJ de 14
+// díg. ou vazio) marca, quando informado, qual estabelecimento foi consultado.
+func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico, highlight string) {
 	ctx := r.Context()
 
 	empresa, err := a.queryRows(ctx, `
@@ -98,16 +103,22 @@ func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico st
 		return
 	}
 
+	// Estabelecimentos com endereço completo; `consultado` marca o CNPJ pedido.
 	estabs, err := a.queryRows(ctx, `
-		SELECT est.cnpj, est.nome_fantasia, est.uf, m.nome AS municipio,
-		       s.descricao AS situacao, c.descricao AS cnae_principal,
-		       est.data_inicio_atividade
+		SELECT est.cnpj, (est.cnpj = $2) AS consultado,
+		       mf.descricao AS matriz_filial, est.nome_fantasia,
+		       sit.descricao AS situacao, est.data_situacao_cadastral,
+		       c.descricao AS cnae_principal, est.data_inicio_atividade,
+		       est.tipo_logradouro, est.logradouro, est.numero, est.complemento,
+		       est.bairro, est.cep, m.nome AS municipio, est.uf,
+		       est.ddd_telefone_1, est.email
 		FROM analytics.estabelecimento est
 		LEFT JOIN analytics.dim_municipio m ON m.codigo = est.municipio_cod
-		LEFT JOIN analytics.dim_situacao_cadastral s ON s.codigo = est.situacao_cadastral
+		LEFT JOIN analytics.dim_situacao_cadastral sit ON sit.codigo = est.situacao_cadastral
+		LEFT JOIN analytics.dim_matriz_filial mf ON mf.codigo = est.matriz_filial
 		LEFT JOIN analytics.dim_cnae c ON c.codigo = est.cnae_fiscal_principal
 		WHERE est.cnpj_basico = $1
-		ORDER BY est.matriz_filial, est.cnpj`, basico)
+		ORDER BY est.matriz_filial, est.cnpj`, basico, highlight)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -142,37 +153,10 @@ func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico st
 	} else {
 		resp["simples"] = nil
 	}
+	if highlight != "" {
+		resp["cnpj_consultado"] = highlight
+	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// estabelecimentoDetalhe: uma filial específica pelo CNPJ completo (14 dígitos).
-func (a *App) estabelecimentoDetalhe(w http.ResponseWriter, r *http.Request, cnpj string) {
-	rows, err := a.queryRows(r.Context(), `
-		SELECT est.cnpj, est.cnpj_basico, e.razao_social, est.nome_fantasia,
-		       mf.descricao AS matriz_filial, sit.descricao AS situacao,
-		       est.data_situacao_cadastral, est.data_inicio_atividade,
-		       c.descricao AS cnae_principal,
-		       est.tipo_logradouro, est.logradouro, est.numero, est.complemento,
-		       est.bairro, est.cep, m.nome AS municipio, est.uf,
-		       est.ddd_telefone_1, est.email,
-		       e.capital_social, n.descricao AS natureza_juridica
-		FROM analytics.estabelecimento est
-		LEFT JOIN analytics.empresa e ON e.cnpj_basico = est.cnpj_basico
-		LEFT JOIN analytics.dim_municipio m ON m.codigo = est.municipio_cod
-		LEFT JOIN analytics.dim_situacao_cadastral sit ON sit.codigo = est.situacao_cadastral
-		LEFT JOIN analytics.dim_matriz_filial mf ON mf.codigo = est.matriz_filial
-		LEFT JOIN analytics.dim_cnae c ON c.codigo = est.cnae_fiscal_principal
-		LEFT JOIN analytics.dim_natureza_juridica n ON n.codigo = e.natureza_juridica_cod
-		WHERE est.cnpj = $1`, cnpj)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if len(rows) == 0 {
-		writeError(w, http.StatusNotFound, "estabelecimento não encontrado")
-		return
-	}
-	writeJSON(w, http.StatusOK, rows[0])
 }
 
 // socios: rede societária — empresas vinculadas a um documento de sócio.
