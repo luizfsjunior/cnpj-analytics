@@ -48,9 +48,10 @@ curl --noproxy '*' http://localhost:8001/empresas/61979497
 curl --noproxy '*' http://localhost:8001/empresas/01610972
 ```
 
-## 3. Estabelecimento por CNPJ completo (14 dígitos)
+## 3. CNPJ completo (14 dígitos)
 
-Mesma rota, ramifica pelo tamanho → retorna **uma filial** com endereço/contato.
+Mesma rota, **mesma visão completa** — útil pra quem cola o CNPJ inteiro. A filial
+correspondente vem com `consultado: true` e o topo traz `cnpj_consultado`.
 
 ```bash
 curl --noproxy '*' http://localhost:8001/empresas/52809343002572

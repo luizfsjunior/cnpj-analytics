@@ -54,12 +54,13 @@ Veja [`TESTING.md`](TESTING.md) para uma bateria de `curl` cobrindo todos os end
 | GET | `/healthz` | Liveness + ping no banco |
 | GET | `/stats/capital-por-natureza?limit=10` | Ranking de capital social por natureza jurídica (via materialized view) |
 | GET | `/stats/empresas?uf=SP&cnae=6201501&situacao=2` | Contagem de estabelecimentos com filtros opcionais |
-| GET | `/empresas/{cnpj}` | **8 dígitos** → empresa + estabelecimentos + QSA + Simples/MEI; **14 dígitos** → a filial específica (endereço, contato, empresa-mãe) |
+| GET | `/empresas/{cnpj}` | Visão completa: empresa + estabelecimentos (com endereço) + QSA + Simples/MEI. Aceita **8 ou 14 dígitos** — com 14, marca a filial consultada (`consultado: true` + `cnpj_consultado`) |
 | GET | `/socios?doc=***509360**&limit=50` | Rede societária: empresas vinculadas a um documento de sócio |
 
-> A rota `/empresas/{cnpj}` ramifica pelo tamanho do CNPJ: 8 dígitos consulta o grão
-> **empresa** (básico, com todas as filiais), 14 dígitos consulta o grão
-> **estabelecimento** (uma filial). Qualquer outro tamanho retorna `400`.
+> A rota `/empresas/{cnpj}` retorna **sempre a visão completa da empresa** (todas as
+> filiais, QSA e Simples), tanto faz colar o CNPJ básico (8 díg.) ou o completo
+> (14 díg.). Com 14 dígitos, a filial correspondente vem com `consultado: true` e o
+> CNPJ pedido aparece em `cnpj_consultado`. Qualquer outro tamanho retorna `400`.
 
 ### Parâmetros (query string)
 
