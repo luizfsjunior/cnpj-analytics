@@ -124,9 +124,24 @@ func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico st
 		return
 	}
 
+	simples, err := a.queryRows(ctx, `
+		SELECT opcao_simples, data_opcao_simples, data_exclusao_simples,
+		       opcao_mei, data_opcao_mei, data_exclusao_mei
+		FROM analytics.simples
+		WHERE cnpj_basico = $1`, basico)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	resp := empresa[0]
 	resp["estabelecimentos"] = estabs
 	resp["qsa"] = socios
+	if len(simples) > 0 {
+		resp["simples"] = simples[0]
+	} else {
+		resp["simples"] = nil
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
