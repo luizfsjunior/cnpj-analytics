@@ -201,13 +201,17 @@ CREATE TABLE analytics.simples (
 ) WITH (fillfactor = 100);
 
 -- ----------------------------------------------------------------------------
--- Fato 6: regime tributário (opcional; fonte atual não publica — fica vazio)
+-- Fato 6: regime tributário (entidades-*.zip — share Nextcloud SEPARADO da
+-- Receita, token MPPfFit7g7zdA8C; ver analytics/load_regime.sh e docs)
+-- Grão = (cnpj completo, ano, forma). A ordem do CNPJ varia (não é só matriz) e
+-- há SCP, então NÃO dá p/ chavear por cnpj_basico — usa-se PK surrogate.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analytics.regime_tributario (
-    cnpj_basico              char(8) NOT NULL,
-    ano                      smallint NOT NULL,
-    forma_de_tributacao      text,
-    qtd_escrituracoes        integer,
-    cnpj_da_scp              varchar(14),
-    PRIMARY KEY (cnpj_basico, ano)
-);
+    id                   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    cnpj                 char(14) NOT NULL,        -- CNPJ completo
+    cnpj_basico          char(8)  NOT NULL,        -- join com empresa
+    ano                  smallint NOT NULL,
+    forma_de_tributacao  text     NOT NULL,        -- LUCRO REAL/PRESUMIDO/ARBITRADO, ISENTO/IMUNE...
+    qtd_escrituracoes    integer,
+    cnpj_da_scp          char(14)                  -- '0' na origem -> NULL
+) WITH (fillfactor = 100);

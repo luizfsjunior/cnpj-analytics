@@ -30,12 +30,21 @@ docker compose up -d postgres
 bash analytics/load.sh                   # carga COMPLETA (leva horas)
 SAMPLE=20000 bash analytics/load.sh      # amostra COERENTE de ~20k estab. (rápido)
 
+# 1b) regime tributário — fonte SEPARADA; carga incremental sem tocar no resto
+DB=cnpj_full bash analytics/load_regime.sh
+
 # 2) sobe a API
 go run ./cmd/api          # ou: docker compose up --build api
 ```
 
 > Os zips da Receita (`Empresas*.zip`, `Estabelecimentos*.zip`, …) devem estar em `./data`
 > (ou em `../minha-receita/data` — o `load.sh` detecta). A carga completa leva horas.
+>
+> Os arquivos de **regime tributário** (`entidades-*.zip`) ficam num share Nextcloud
+> **separado** da Receita (token `MPPfFit7g7zdA8C`) e geram a tabela
+> `analytics.regime_tributario` (~10,6 mi linhas, anos 2016–2024). Como baixar, formato
+> e detalhes: [`analytics/fontes-dados.md`](analytics/fontes-dados.md). O `load.sh`
+> completo já os inclui se estiverem no `DATA_DIR`; senão, use `load_regime.sh` depois.
 
 ### Variáveis do `load.sh`
 

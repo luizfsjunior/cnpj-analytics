@@ -78,6 +78,23 @@ copy_zips_match() {
     done
 }
 
+# \copy dos arquivos de regime tributário (entidades-*.zip). Diferente do COPY
+# principal: delimitador VÍRGULA, e cada zip pode ter VÁRIOS CSVs (um por ano),
+# cada um com cabeçalho -> filtra todas as linhas de header com grep -vi.
+copy_regime() {
+    shopt -s nullglob
+    local files=( $DATA_DIR/entidades-*.zip )
+    shopt -u nullglob
+    if [ ${#files[@]} -eq 0 ]; then
+        echo "!! nenhum entidades-*.zip — pulando regime tributário (fonte separada, ver load_regime.sh)"; return
+    fi
+    for z in "${files[@]}"; do
+        echo ">> COPY $(basename "$z") -> staging.regime_tributario"
+        unzip -p "$z" | tr -d '\000\r' | grep -vi '^ano,cnpj,cnpj_da_scp' \
+            | "${PSQL[@]}" -c "\copy staging.regime_tributario FROM STDIN (FORMAT csv, DELIMITER ',', QUOTE '\"', ENCODING 'UTF8')"
+    done
+}
+
 echo "== destino: banco '$DB' | modo: $( [ "$SAMPLE" -gt 0 ] && echo "AMOSTRA ($SAMPLE estab.)" || echo COMPLETO ) =="
 
 echo "== [1/5] schema =="
@@ -121,6 +138,7 @@ else
     copy_zips estabelecimentos 'Estabelecimentos*.zip'
     copy_zips socios           'Socios*.zip'
     copy_zips simples          'Simples.zip'
+    copy_regime    # regime tributário (entidades-*.zip; fonte Nextcloud separada)
 fi
 
 echo "== [4/5] transform (staging -> analytics) =="
@@ -134,4 +152,5 @@ echo "== concluído (banco '$DB') =="
 "${PSQL[@]}" -c "SELECT 'empresa' t, count(*) FROM analytics.empresa
 UNION ALL SELECT 'estabelecimento', count(*) FROM analytics.estabelecimento
 UNION ALL SELECT 'socio', count(*) FROM analytics.socio
-UNION ALL SELECT 'simples', count(*) FROM analytics.simples;"
+UNION ALL SELECT 'simples', count(*) FROM analytics.simples
+UNION ALL SELECT 'regime_tributario', count(*) FROM analytics.regime_tributario;"
