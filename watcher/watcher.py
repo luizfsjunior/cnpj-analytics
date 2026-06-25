@@ -11,7 +11,7 @@ Variáveis de ambiente (ou .env na raiz do projeto):
     CNPJ_DATA_DIR     DATA_DIR do load.sh         (default: ../minha-receita/data)
     CNPJ_LOAD_SH      caminho do load.sh           (default: analytics/load.sh)
     CNPJ_STATE_FILE   onde persistir o estado      (default: watcher/state.json)
-    CHECK_INTERVAL_H  intervalo em horas           (default: 720 = 30 dias)
+    CHECK_INTERVAL_H  intervalo em horas           (default: 24 = diário)
 """
 
 import json
@@ -49,7 +49,7 @@ def to_wsl_path(p: str | Path) -> str:
         return f"/mnt/{m.group(1).lower()}/{m.group(2)}"
     return s
 STATE_FILE = Path(os.getenv("CNPJ_STATE_FILE", str(Path(__file__).parent / "state.json")))
-CHECK_INTERVAL_H = int(os.getenv("CHECK_INTERVAL_H", "720"))
+CHECK_INTERVAL_H = int(os.getenv("CHECK_INTERVAL_H", "24"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -201,14 +201,14 @@ def main() -> None:
         return
 
     log.info(
-        "Watcher iniciado. Verificação a cada %d h (~%d dias). Verificando agora...",
+        "Watcher iniciado. Verificação a cada %d h. "
+        "O PROPFIND é leve — o load pesado só roda quando detecta mês novo.",
         CHECK_INTERVAL_H,
-        CHECK_INTERVAL_H // 24,
     )
     check_and_load()
 
     schedule.every(CHECK_INTERVAL_H).hours.do(check_and_load)
-    log.info("Próxima verificação em %d h.", CHECK_INTERVAL_H)
+    log.info("Próxima verificação em %d h. (ajuste com CHECK_INTERVAL_H=N)", CHECK_INTERVAL_H)
 
     while True:
         schedule.run_pending()
