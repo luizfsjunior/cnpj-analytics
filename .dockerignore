@@ -1,0 +1,9 @@
+# Dados brutos da Receita (vários GB) — NÃO precisam ir no build context da API.
+# O COPY da carga é feito via `docker compose exec`/streaming, não via imagem.
+data/
+*.zip
+
+# Artefatos locais
+.git/
+.env
+*.md

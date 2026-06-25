@@ -102,6 +102,21 @@ curl --noproxy '*' 'http://localhost:8001/stats/capital-por-natureza?limit=5'
 curl --noproxy '*' 'http://localhost:8001/stats/capital-por-natureza?limit=20'
 ```
 
+## 6b. Regime tributário (distribuição por forma)
+
+```bash
+# distribuição geral (todos os anos)
+curl --noproxy '*' 'http://localhost:8001/stats/regime'
+
+# só o ano-base 2024
+curl --noproxy '*' 'http://localhost:8001/stats/regime?ano=2024'
+```
+
+> O regime de cada empresa também aparece embutido no `/empresas/{cnpj}`, no
+> campo `regime_tributario` (lista por filial/ano). Note que a fonte cobre
+> sobretudo empresas de lucro real/presumido/arbitrado e imunes/isentas — MEI e
+> Simples puros geralmente não constam, então o array pode vir vazio.
+
 ## 7. Rede societária por documento de sócio
 
 ```bash
@@ -127,6 +142,7 @@ for path in \
   '/empresas/52809343002572' \
   '/stats/empresas?uf=SP&situacao=2' \
   '/stats/capital-por-natureza?limit=5' \
+  '/stats/regime?ano=2024' \
   '/socios?doc=***509360**'
 do
   printf '\n### GET %s\n' "$path"

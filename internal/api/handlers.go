@@ -63,6 +63,29 @@ func (a *App) statsEmpresas(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rows[0])
 }
 
+// statsRegime: distribuição de empresas por forma de tributação.
+// GET /stats/regime?ano=2024  (ano é opcional)
+func (a *App) statsRegime(w http.ResponseWriter, r *http.Request) {
+	q := `SELECT forma_de_tributacao,
+	             count(*) AS registros,
+	             count(DISTINCT cnpj_basico) AS empresas_distintas
+	      FROM analytics.regime_tributario WHERE 1=1`
+	var args []any
+	if ano := r.URL.Query().Get("ano"); ano != "" {
+		if v, err := strconv.Atoi(ano); err == nil {
+			args = append(args, v)
+			q += " AND ano = $" + strconv.Itoa(len(args))
+		}
+	}
+	q += " GROUP BY forma_de_tributacao ORDER BY registros DESC"
+	rows, err := a.queryRows(r.Context(), q, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": rows})
+}
+
 // empresaDetalhe atende GET /empresas/{cnpj} e mostra SEMPRE a visão completa
 // (empresa + estabelecimentos + QSA + Simples), aceite-se o CNPJ básico (8 díg.)
 // ou o CNPJ completo (14 díg.). Com 14 dígitos, deriva o básico e marca a filial
@@ -145,9 +168,22 @@ func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico, h
 		return
 	}
 
+	// Regime tributário: 1:N por (cnpj, ano). Grão = CNPJ completo (a ordem
+	// varia), por isso busca-se por cnpj_basico e devolve-se a lista por filial/ano.
+	regime, err := a.queryRows(ctx, `
+		SELECT cnpj, ano, forma_de_tributacao, qtd_escrituracoes, cnpj_da_scp
+		FROM analytics.regime_tributario
+		WHERE cnpj_basico = $1
+		ORDER BY ano DESC, cnpj`, basico)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	resp := empresa[0]
 	resp["estabelecimentos"] = estabs
 	resp["qsa"] = socios
+	resp["regime_tributario"] = regime
 	if len(simples) > 0 {
 		resp["simples"] = simples[0]
 	} else {
