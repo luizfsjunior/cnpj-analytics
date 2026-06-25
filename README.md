@@ -55,8 +55,11 @@ go run ./cmd/api          # ou: docker compose up --build api
 | `DB` | `cnpj` | Banco de destino. Ex.: `DB=cnpj_full bash analytics/load.sh` carrega num banco separado sem tocar na amostra. |
 | `DATA_DIR` | `./data` | Pasta dos zips (cai para `../minha-receita/data` se necessário). |
 | `TUNE` | `1` | Aplica tuning de carga (reload-only). `TUNE=0` desliga. **`shared_buffers` exige restart** — defina-o antes (ver [`tuning-carga.md`](analytics/tuning-carga.md)). |
-| `TUNE_RAM_GB` | `16` | Orçamento de RAM para o tuning. Todos os knobs (`maintenance_work_mem`, `work_mem`, `max_wal_size`) são calculados proporcionalmente. Pico durante índices ≈ 60% deste valor (~9.6 GB). |
+| `TUNE_RAM_GB` | `6` | Orçamento de RAM para o tuning. Todos os knobs (`maintenance_work_mem`, `work_mem`, `max_wal_size`) são calculados proporcionalmente. Pico durante índices ≈ 60% deste valor (~3.6 GB). |
 | `KEEP_STAGING` | `0` | Por padrão dropa o schema `staging` ao terminar (libera ~27GB na carga completa). `KEEP_STAGING=1` preserva para debug. |
+
+Todas podem ser definidas no `.env` da raiz (o `load.sh` o carrega automaticamente)
+ou passadas na linha de comando — a CLI tem prioridade sobre o `.env`.
 
 Veja [`TESTING.md`](TESTING.md) para uma bateria de `curl` cobrindo todos os endpoints.
 
