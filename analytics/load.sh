@@ -39,6 +39,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # de comando (ex.: `TUNE_RAM_GB=64 bash load.sh`) têm prioridade sobre o .env.
 if [ -f "$HERE/../.env" ]; then
     while IFS='=' read -r _k _v; do
+        _k="${_k%$'\r'}"; _v="${_v%$'\r'}"              # tolera CRLF (.env salvo no Windows)
         case "$_k" in ''|\#*) continue;; esac          # ignora vazias/comentários
         [ -n "${!_k+x}" ] && continue                   # já definida no shell: mantém
         export "$_k=$_v"
