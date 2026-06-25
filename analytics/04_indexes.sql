@@ -43,13 +43,7 @@ CREATE INDEX IF NOT EXISTS ix_socio_cnpj_basico
 CREATE INDEX IF NOT EXISTS ix_socio_nome_trgm
     ON analytics.socio USING gin (nome_socio gin_trgm_ops);
 
--- regime tributário: join por empresa/CNPJ e filtro por ano+forma
-CREATE INDEX IF NOT EXISTS ix_regime_cnpj_basico
-    ON analytics.regime_tributario (cnpj_basico);
-CREATE INDEX IF NOT EXISTS ix_regime_cnpj
-    ON analytics.regime_tributario (cnpj);
-CREATE INDEX IF NOT EXISTS ix_regime_ano_forma
-    ON analytics.regime_tributario (ano, forma_de_tributacao);
+-- regime tributário: índices criados em analytics/regime_transform.sql.
 
 -- Estatísticas estendidas para colunas correlacionadas (planner subestima sem isto)
 CREATE STATISTICS IF NOT EXISTS st_estab_geo
@@ -62,4 +56,3 @@ VACUUM ANALYZE analytics.estabelecimento;
 VACUUM ANALYZE analytics.estabelecimento_cnae_secundario;
 VACUUM ANALYZE analytics.socio;
 VACUUM ANALYZE analytics.simples;
-VACUUM ANALYZE analytics.regime_tributario;

@@ -202,16 +202,7 @@ CREATE TABLE analytics.simples (
 
 -- ----------------------------------------------------------------------------
 -- Fato 6: regime tributário (entidades-*.zip — share Nextcloud SEPARADO da
--- Receita, token MPPfFit7g7zdA8C; ver analytics/load_regime.sh e docs)
--- Grão = (cnpj completo, ano, forma). A ordem do CNPJ varia (não é só matriz) e
--- há SCP, então NÃO dá p/ chavear por cnpj_basico — usa-se PK surrogate.
+-- Receita, token MPPfFit7g7zdA8C). Por ter fonte e cadência próprias, toda a sua
+-- DDL/transform/índices vivem juntos em analytics/regime_transform.sql (reusado
+-- pela carga completa e pela incremental `REGIME_ONLY=1 bash analytics/load.sh`).
 -- ----------------------------------------------------------------------------
-CREATE TABLE analytics.regime_tributario (
-    id                   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    cnpj                 char(14) NOT NULL,        -- CNPJ completo
-    cnpj_basico          char(8)  NOT NULL,        -- join com empresa
-    ano                  smallint NOT NULL,
-    forma_de_tributacao  text     NOT NULL,        -- LUCRO REAL/PRESUMIDO/ARBITRADO, ISENTO/IMUNE...
-    qtd_escrituracoes    integer,
-    cnpj_da_scp          char(14)                  -- '0' na origem -> NULL
-) WITH (fillfactor = 100);
