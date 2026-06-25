@@ -54,10 +54,11 @@ significa "sem SCP".
 
 > ℹ️ A versão atual (arquivos de 2026-01-15) é uniforme: todos com cabeçalho e vírgula.
 > Versões antigas tinham `Lucro Presumido`/`Imunes` com `;` e sem cabeçalho — por isso
-> `load.sh`/`load_regime.sh` filtram qualquer linha de cabeçalho com `grep -vi`.
+> `load.sh` filtra qualquer linha de cabeçalho com `grep -vi`.
 
-Carregados por `analytics/load_regime.sh` (carga incremental, não toca nas demais
-tabelas) ou pelo `analytics/load.sh` numa carga completa (função `copy_regime`).
+Carregados pelo `analytics/load.sh`: na carga completa (função `copy_regime`) ou,
+incrementalmente sem tocar nas demais tabelas, com `REGIME_ONLY=1 bash
+analytics/load.sh`. O transform/índices ficam em `analytics/regime_transform.sql`.
 
 ### Tabela de destino
 

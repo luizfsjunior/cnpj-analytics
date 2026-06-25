@@ -153,24 +153,5 @@ FROM staging.simples
 WHERE cnpj_basico ~ '^\d{8}$'
 ON CONFLICT (cnpj_basico) DO NOTHING;
 
--- ----------------------------------------------------------------------------
--- regime_tributario (entidades-*.zip; CNPJ completo formatado -> 14 dígitos)
--- DISTINCT remove duplicatas exatas que aparecem entre os arquivos.
--- ----------------------------------------------------------------------------
-TRUNCATE analytics.regime_tributario RESTART IDENTITY;
-INSERT INTO analytics.regime_tributario
-    (cnpj, cnpj_basico, ano, forma_de_tributacao, qtd_escrituracoes, cnpj_da_scp)
-SELECT DISTINCT
-    cnpj14::char(14),
-    substr(cnpj14, 1, 8)::char(8),
-    nullif(ano, '')::smallint,
-    forma_de_tributacao,
-    nullif(quantidade_de_escrituracoes, '')::integer,
-    nullif(nullif(cnpj_da_scp, ''), '0')::char(14)
-FROM (
-    SELECT regexp_replace(cnpj, '\D', '', 'g') AS cnpj14, *
-    FROM staging.regime_tributario
-) s
-WHERE length(cnpj14) = 14
-  AND nullif(ano, '') IS NOT NULL
-  AND nullif(forma_de_tributacao, '') IS NOT NULL;
+-- regime_tributario: fonte/cadência próprias -> transform isolado em
+-- analytics/regime_transform.sql (chamado pelo load.sh após os índices).

@@ -77,14 +77,8 @@ CREATE TABLE staging.simples (            -- Simples.csv (7 colunas)
     data_exclusao_mei        text
 );
 
-DROP TABLE IF EXISTS staging.regime_tributario;
-CREATE TABLE staging.regime_tributario (  -- entidades-*.csv (5 colunas, VÍRGULA, c/ header)
-    ano                          text,
-    cnpj                         text,     -- completo e formatado: 00.000.000/0001-91
-    cnpj_da_scp                  text,     -- '0' = sem SCP
-    forma_de_tributacao          text,
-    quantidade_de_escrituracoes  text
-);
+-- staging.regime_tributario é criada pelo load.sh (create_regime_staging), junto
+-- do COPY, pois é reusada também pela carga incremental REGIME_ONLY=1.
 
 -- Lookups (codigo;descricao)
 DROP TABLE IF EXISTS staging.cnaes;        CREATE TABLE staging.cnaes        (codigo text, descricao text);

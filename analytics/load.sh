@@ -46,9 +46,15 @@ MAX_WAL_SIZE="${MAX_WAL_SIZE:-8GB}"
 WORK_MEM="${WORK_MEM:-256MB}"
 # Mantém o schema staging após a carga (debug). Default: dropar e liberar ~27GB.
 KEEP_STAGING="${KEEP_STAGING:-0}"
+# Carga INCREMENTAL só do regime tributário (entidades-*.zip), sem tocar no resto.
+REGIME_ONLY="${REGIME_ONLY:-0}"
 
 # Os zips ficam no repo minha-receita; permita sobrescrever via DATA_DIR.
 if [ ! -e "$DATA_DIR/Empresas0.zip" ] && [ -e "../minha-receita/data/Empresas0.zip" ]; then
+    DATA_DIR="../minha-receita/data"
+fi
+# No modo REGIME_ONLY a âncora de detecção é o zip de regime, não Empresas0.
+if [ ! -e "$DATA_DIR/entidades-lucro-real.zip" ] && [ -e "../minha-receita/data/entidades-lucro-real.zip" ]; then
     DATA_DIR="../minha-receita/data"
 fi
 
@@ -122,6 +128,22 @@ copy_zips_match() {
     done
 }
 
+# Cria a staging do regime (reusada pela carga completa e pela incremental). Fica
+# aqui (e não no 02_staging.sql) para o modo REGIME_ONLY não recriar o resto.
+create_regime_staging() {
+    "${PSQL[@]}" <<'SQL'
+CREATE SCHEMA IF NOT EXISTS staging;
+DROP TABLE IF EXISTS staging.regime_tributario;
+CREATE TABLE staging.regime_tributario (  -- entidades-*.csv (5 colunas, VÍRGULA, c/ header)
+    ano                          text,
+    cnpj                         text,     -- completo e formatado: 00.000.000/0001-91
+    cnpj_da_scp                  text,     -- '0' = sem SCP
+    forma_de_tributacao          text,
+    quantidade_de_escrituracoes  text
+);
+SQL
+}
+
 # \copy dos arquivos de regime tributário (entidades-*.zip). Diferente do COPY
 # principal: delimitador VÍRGULA, e cada zip pode ter VÁRIOS CSVs (um por ano),
 # cada um com cabeçalho -> filtra todas as linhas de header com grep -vi.
@@ -130,7 +152,7 @@ copy_regime() {
     local files=( $DATA_DIR/entidades-*.zip )
     shopt -u nullglob
     if [ ${#files[@]} -eq 0 ]; then
-        echo "!! nenhum entidades-*.zip — pulando regime tributário (fonte separada, ver load_regime.sh)"; return
+        echo "!! nenhum entidades-*.zip — pulando regime tributário (fonte Nextcloud separada, ver fontes-dados.md)"; return
     fi
     for z in "${files[@]}"; do
         echo ">> COPY $(basename "$z") -> staging.regime_tributario"
@@ -138,6 +160,21 @@ copy_regime() {
             | "${PSQL[@]}" -c "\copy staging.regime_tributario FROM STDIN (FORMAT csv, DELIMITER ',', QUOTE '\"', ENCODING 'UTF8')"
     done
 }
+
+# --- Carga INCREMENTAL só do regime tributário (substitui o antigo load_regime.sh).
+# Não aplica tuning, não recria o schema, não dropa o staging das outras tabelas.
+if [ "$REGIME_ONLY" = "1" ]; then
+    echo "== regime tributário (INCREMENTAL) -> banco '$DB' | data: $DATA_DIR =="
+    create_regime_staging
+    copy_regime
+    echo ">> transform staging -> analytics.regime_tributario"
+    run_sql_file "$HERE/regime_transform.sql"
+    "${PSQL[@]}" -c "SELECT count(*) AS linhas, count(DISTINCT cnpj_basico) AS empresas,
+                            min(ano) AS ano_min, max(ano) AS ano_max
+                     FROM analytics.regime_tributario;"
+    echo "== concluído (regime, banco '$DB') =="
+    exit 0
+fi
 
 echo "== destino: banco '$DB' | modo: $( [ "$SAMPLE" -gt 0 ] && echo "AMOSTRA ($SAMPLE estab.)" || echo COMPLETO ) =="
 
@@ -157,6 +194,10 @@ copy_zips qualificacoes 'Qualificacoes.zip'
 copy_zips paises       'Paises.zip'
 copy_zips motivos      'Motivos.zip'
 copy_zips municipios   'Municipios.zip'
+
+# staging do regime sempre criada (na amostra fica vazia -> tabela final vazia,
+# mas existente, p/ a API não quebrar). COPY só no modo completo.
+create_regime_staging
 
 if [ "$SAMPLE" -gt 0 ]; then
     # --- âncora: head -N de UM zip de estabelecimentos ---
@@ -184,7 +225,7 @@ else
     copy_zips estabelecimentos 'Estabelecimentos*.zip'
     copy_zips socios           'Socios*.zip'
     copy_zips simples          'Simples.zip'
-    copy_regime    # regime tributário (entidades-*.zip; fonte Nextcloud separada)
+    copy_regime                            # COPY dos entidades-*.zip (fonte separada)
 fi
 
 echo "== [4/5] transform (staging -> analytics) =="
@@ -193,6 +234,11 @@ run_sql_file "$HERE/03_transform.sql"
 echo "== [5/5] índices + materialized views =="
 run_sql_file "$HERE/04_indexes.sql"
 run_sql_file "$HERE/05_materialized_views.sql"
+
+# regime tributário: transform isolado (sempre; na amostra a staging está vazia,
+# então só cria a tabela final vazia — mantém o schema consistente p/ a API).
+echo "== regime tributário (transform) =="
+run_sql_file "$HERE/regime_transform.sql"
 
 # staging já cumpriu o papel (foi consumido em 03_transform) -> liberar o espaço.
 if [ "$KEEP_STAGING" = "1" ]; then
