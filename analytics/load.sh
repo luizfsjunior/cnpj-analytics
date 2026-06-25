@@ -16,7 +16,7 @@
 #   SAMPLE        se >0, gera amostra coerente        (default: 0 = base completa)
 #   DATA_DIR      pasta com os zips da Receita        (default: ./data; ver nota)
 #   TUNE          aplica tuning de carga (reload)     (default: 1; 0 desliga)
-#   TUNE_RAM_GB   orçamento de RAM para o tuning       (default: 16 GB)
+#   TUNE_RAM_GB   orçamento de RAM para o tuning       (default: 6 GB)
 #                 Todos os knobs são calculados proporcionalmente a este valor.
 #                 Pico de RAM durante índices ≈ TUNE_RAM_GB * 60%.
 #   KEEP_STAGING  preserva o schema staging no fim    (default: 0 = dropa, ~27GB)
@@ -32,13 +32,26 @@
 # ============================================================================
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Carrega o .env da raiz do repo (se existir) para que as variáveis abaixo —
+# inclusive as de tuning (TUNE, TUNE_RAM_GB, ...) — possam ser definidas lá.
+# Só preenche o que ainda NÃO veio do ambiente, então valores passados na linha
+# de comando (ex.: `TUNE_RAM_GB=64 bash load.sh`) têm prioridade sobre o .env.
+if [ -f "$HERE/../.env" ]; then
+    while IFS='=' read -r _k _v; do
+        case "$_k" in ''|\#*) continue;; esac          # ignora vazias/comentários
+        [ -n "${!_k+x}" ] && continue                   # já definida no shell: mantém
+        export "$_k=$_v"
+    done < "$HERE/../.env"
+    unset _k _v
+fi
+
 DB="${DB:-cnpj}"
 SAMPLE="${SAMPLE:-0}"
 DATA_DIR="${DATA_DIR:-./data}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Tuning de carga (reload-only; NÃO derruba a sessão nem exige restart) ------
-# TUNE_RAM_GB = orçamento de RAM que o load pode usar (default: 16 GB).
+# TUNE_RAM_GB = orçamento de RAM que o load pode usar (default: 6 GB).
 # Os knobs são calculados a partir desse único valor:
 #   maintenance_work_mem = TUNE_RAM_GB * 0.6 / (workers+1)  → pico = 60% da cota
 #   work_mem             = TUNE_RAM_GB * 0.015               → ~1.5% da cota
@@ -47,7 +60,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # Desligue tudo com TUNE=0. Detalhes: analytics/tuning-carga.md.
 # OBS: shared_buffers exige RESTART -> defina ANTES da carga (não é feito aqui).
 TUNE="${TUNE:-1}"
-TUNE_RAM_GB="${TUNE_RAM_GB:-16}"
+TUNE_RAM_GB="${TUNE_RAM_GB:-6}"
 MAX_PARALLEL_MAINT="${MAX_PARALLEL_MAINT:-4}"
 # Calculados a partir de TUNE_RAM_GB; sobrescrevíveis individualmente por env.
 _mwm=$(awk "BEGIN{printf \"%d\", ${TUNE_RAM_GB}*0.6/(${MAX_PARALLEL_MAINT}+1)*1024}")
