@@ -85,11 +85,31 @@ if [ ! -e "$DATA_DIR/entidades-lucro-real.zip" ] && [ -e "../minha-receita/data/
     DATA_DIR="../minha-receita/data"
 fi
 
-# psql dentro do container; -T = sem TTY (essencial para pipe via STDIN)
-PSQL=(docker compose exec -T postgres psql -U cnpj -d "$DB" -v ON_ERROR_STOP=1)
+# Conexão com o postgres — dois modos:
+#  - PGHOST setado (ex.: dentro do compose, serviço `watcher`): psql direto via
+#    TCP. Requer PGPASSWORD. NÃO precisa do socket do Docker dentro do container.
+#  - senão (dev no host): via `docker compose exec` no container `postgres`.
+# -T = sem TTY (essencial para o pipe via STDIN e p/ não injetar \r na saída).
+if [ -n "${PGHOST:-}" ]; then
+    PSQL=(psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "${PGUSER:-cnpj}" -d "$DB" -v ON_ERROR_STOP=1)
+    PSQL_ADMIN=(psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "${PGUSER:-cnpj}" -d postgres -v ON_ERROR_STOP=1)
+else
+    PSQL=(docker compose exec -T postgres psql -U cnpj -d "$DB" -v ON_ERROR_STOP=1)
+    PSQL_ADMIN=(docker compose exec -T postgres psql -U cnpj -d postgres -v ON_ERROR_STOP=1)
+fi
 COPY_OPTS="(FORMAT csv, DELIMITER ';', QUOTE '\"', ENCODING 'LATIN9')"
 
 run_sql_file() { echo ">> aplicando $1"; "${PSQL[@]}" < "$1"; }
+
+# Cria o banco destino se ainda não existir (idempotente). O compose só cria o
+# banco `cnpj`; cargas em `cnpj_full` (default do watcher) exigem o banco antes.
+# Conecta no db de manutenção `postgres`.
+ensure_db() {
+    if ! "${PSQL_ADMIN[@]}" -tAc "SELECT 1 FROM pg_database WHERE datname = '$DB'" | grep -q 1; then
+        echo ">> criando banco '$DB'"
+        "${PSQL_ADMIN[@]}" -c "CREATE DATABASE \"$DB\""
+    fi
+}
 
 # Aplica o tuning de carga via ALTER SYSTEM + pg_reload_conf (SIGHUP). Cada ALTER
 # vai num -c separado porque ALTER SYSTEM não roda dentro de transação.
@@ -193,6 +213,7 @@ copy_regime() {
 # Não aplica tuning, não recria o schema, não dropa o staging das outras tabelas.
 if [ "$REGIME_ONLY" = "1" ]; then
     echo "== regime tributário (INCREMENTAL) -> banco '$DB' | data: $DATA_DIR =="
+    ensure_db
     create_regime_staging
     copy_regime
     echo ">> transform staging -> analytics.regime_tributario"
@@ -206,6 +227,7 @@ fi
 
 echo "== destino: banco '$DB' | modo: $( [ "$SAMPLE" -gt 0 ] && echo "AMOSTRA ($SAMPLE estab.)" || echo COMPLETO ) =="
 
+ensure_db
 apply_tuning
 
 echo "== [1/5] schema =="

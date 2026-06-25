@@ -71,32 +71,45 @@ Veja [`TESTING.md`](TESTING.md) para uma bateria de `curl` cobrindo todos os end
 comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo:
 `to_wsl_path` só transforma caminhos `C:/...`, então paths POSIX passam intactos.
 
-| Var | Default | Efeito |
+| Var | Default (compose) | Efeito |
 |---|---|---|
-| `CNPJ_DB` | `cnpj_full` | Banco de destino passado ao `load.sh`. |
-| `CNPJ_DATA_DIR` | `../minha-receita/data` | `DATA_DIR` do `load.sh` (onde estão os zips). |
+| `CNPJ_DB` | `cnpj_full` | Banco de destino passado ao `load.sh` (criado se não existir). |
+| `CNPJ_DATA_DIR` | `/data` | `DATA_DIR` do `load.sh` (onde estão os zips; é um volume). |
 | `CHECK_INTERVAL_H` | `24` | Intervalo entre verificações do share. |
 | `LOAD_AFTER_HOUR` | `22` | Hora mínima (0–23) para iniciar a carga. |
+| `TUNE_RAM_GB` | `6` | Orçamento de RAM da carga (ver tabela do `load.sh`). |
 
-### Rodar no Linux
+### Rodar com Docker (recomendado)
+
+O watcher tem seu próprio serviço no `docker-compose.yml`. Ele fala com o postgres
+**direto por TCP** (`PGHOST=postgres`), então **não precisa do socket do Docker** —
+só do cliente `psql` (já na imagem). Aponte o volume `/data` para a pasta dos zips:
 
 ```bash
-# pré-requisitos do load.sh
-sudo apt install -y unzip ripgrep            # rg + unzip no PATH; docker já instalado
-
-# dependências do watcher
-python3 -m venv watcher/.venv
-watcher/.venv/bin/pip install -r watcher/requirements.txt
-
-# subir o postgres e o watcher
-docker compose up -d postgres
-watcher/.venv/bin/python watcher/watcher.py            # loop contínuo
-watcher/.venv/bin/python watcher/watcher.py --check    # uma verificação só (cron/debug)
+# edite o mapeamento ./data:/data no compose se os zips ficam em outro lugar
+docker compose up -d postgres watcher
+docker compose logs -f watcher
 ```
 
-Para rodar como serviço (restart automático, sobe no boot, logs no journal), use o
-unit pronto em [`watcher/cnpj-watcher.service`](watcher/cnpj-watcher.service) — ajuste
-`User=`, `WorkingDirectory=` e o caminho do venv, depois:
+O estado (último mês carregado) persiste no volume `watcher_state`. Na primeira
+subida, se houver mês novo no share, a carga dispara após `LOAD_AFTER_HOUR`.
+
+### Rodar no host (alternativa, sem container)
+
+Se preferir rodar fora de container, o `load.sh` cai automaticamente para
+`docker compose exec postgres` quando `PGHOST` **não** está setado:
+
+```bash
+sudo apt install -y unzip ripgrep            # rg + unzip no PATH; docker já instalado
+python3 -m venv watcher/.venv
+watcher/.venv/bin/pip install -r watcher/requirements.txt
+docker compose up -d postgres
+watcher/.venv/bin/python watcher/watcher.py            # loop (ou --check p/ uma vez)
+```
+
+Como serviço systemd (restart automático, logs no journal), use o unit pronto em
+[`watcher/cnpj-watcher.service`](watcher/cnpj-watcher.service) — ajuste `User=`,
+`WorkingDirectory=` e o caminho do venv, depois:
 
 ```bash
 sudo cp watcher/cnpj-watcher.service /etc/systemd/system/

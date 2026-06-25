@@ -7,3 +7,8 @@ data/
 .git/
 .env
 *.md
+
+# Estado/logs/venv do watcher — entram por volume em runtime, não na imagem.
+watcher/state.json
+watcher/watcher.log
+watcher/.venv/

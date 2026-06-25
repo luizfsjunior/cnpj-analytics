@@ -25,3 +25,34 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  watcher:
+    build:
+      context: .
+      dockerfile: watcher/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Conexão direta com o postgres (sem socket do Docker). Ver load.sh.
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: cnpj
+      PGPASSWORD: cnpj
+      # Config do watcher (defaults do watcher.py; ajuste se necessário).
+      CNPJ_DB: cnpj_full
+      CNPJ_DATA_DIR: /data
+      CNPJ_STATE_FILE: /state/state.json
+      CHECK_INTERVAL_H: "24"
+      LOAD_AFTER_HOUR: "22"
+      # Orçamento de RAM da carga (knobs calculados a partir daqui).
+      TUNE_RAM_GB: "6"
+    volumes:
+      # Pasta com os zips da Receita. Ajuste a origem ao caminho real no servidor.
+      - ./data:/data
+      # Persiste o estado (último mês carregado) entre restarts.
+      - watcher_state:/state
+    restart: unless-stopped
+
+volumes:
+  watcher_state:
