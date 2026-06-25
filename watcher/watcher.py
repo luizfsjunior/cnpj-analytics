@@ -145,7 +145,12 @@ def wait_for_load_window() -> None:
 # ---------------------------------------------------------------------------
 
 def to_wsl_path(p: str | Path) -> str:
-    """Converte caminho Windows (C:/...) para WSL (/mnt/c/...)."""
+    """Converte caminho Windows (C:/...) para WSL (/mnt/c/...).
+
+    No-op em paths POSIX/Linux: só transforma quando casa o padrão `X:/...`,
+    então um `/home/user/...` passa intacto. Por isso o watcher roda tanto no
+    dev Windows+WSL quanto num servidor Linux nativo sem alteração.
+    """
     s = str(p).replace("\\", "/")
     m = re.match(r"^([A-Za-z]):/(.+)$", s)
     if m:

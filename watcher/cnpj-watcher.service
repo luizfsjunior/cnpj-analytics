@@ -1,0 +1,40 @@
+# systemd unit do watcher de dados da Receita (dispara o load.sh quando há mês novo).
+#
+# Instalação (ajuste os caminhos/usuário aos do seu servidor):
+#   sudo cp watcher/cnpj-watcher.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cnpj-watcher
+#   journalctl -u cnpj-watcher -f          # acompanha os logs
+#
+# Os placeholders <...> abaixo PRECISAM ser editados antes de habilitar.
+
+[Unit]
+Description=CNPJ watcher - dispara load.sh quando a Receita publica dados novos
+# Sobe depois do Docker, pois o load.sh usa `docker compose exec postgres`.
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=<usuario>
+Group=<usuario>
+# Raiz do repo (WorkingDirectory == cwd usado pelo load.sh para achar ./data e o .env).
+WorkingDirectory=/opt/cnpj-analytics
+# Use o python do venv criado em watcher/.venv.
+ExecStart=/opt/cnpj-analytics/watcher/.venv/bin/python /opt/cnpj-analytics/watcher/watcher.py
+
+# Configuração do watcher (todas opcionais — estes são os defaults do watcher.py).
+Environment=CNPJ_DB=cnpj_full
+Environment=CNPJ_DATA_DIR=../minha-receita/data
+Environment=CHECK_INTERVAL_H=24
+Environment=LOAD_AFTER_HOUR=22
+# O tuning (TUNE_RAM_GB etc.) vem do .env da raiz, lido pelo próprio load.sh.
+
+Restart=on-failure
+RestartSec=30
+# A carga completa é pesada; não mate o serviço por uso de CPU/IO.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

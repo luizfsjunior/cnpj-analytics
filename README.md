@@ -63,6 +63,48 @@ ou passadas na linha de comando — a CLI tem prioridade sobre o `.env`.
 
 Veja [`TESTING.md`](TESTING.md) para uma bateria de `curl` cobrindo todos os endpoints.
 
+## Atualização automática (watcher)
+
+[`watcher/watcher.py`](watcher/watcher.py) verifica o share da Receita a cada
+`CHECK_INTERVAL_H` horas (PROPFIND leve) e, ao detectar um mês novo, dispara o
+`load.sh` — mas só após `LOAD_AFTER_HOUR` (default 22h), para não pesar no horário
+comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo:
+`to_wsl_path` só transforma caminhos `C:/...`, então paths POSIX passam intactos.
+
+| Var | Default | Efeito |
+|---|---|---|
+| `CNPJ_DB` | `cnpj_full` | Banco de destino passado ao `load.sh`. |
+| `CNPJ_DATA_DIR` | `../minha-receita/data` | `DATA_DIR` do `load.sh` (onde estão os zips). |
+| `CHECK_INTERVAL_H` | `24` | Intervalo entre verificações do share. |
+| `LOAD_AFTER_HOUR` | `22` | Hora mínima (0–23) para iniciar a carga. |
+
+### Rodar no Linux
+
+```bash
+# pré-requisitos do load.sh
+sudo apt install -y unzip ripgrep            # rg + unzip no PATH; docker já instalado
+
+# dependências do watcher
+python3 -m venv watcher/.venv
+watcher/.venv/bin/pip install -r watcher/requirements.txt
+
+# subir o postgres e o watcher
+docker compose up -d postgres
+watcher/.venv/bin/python watcher/watcher.py            # loop contínuo
+watcher/.venv/bin/python watcher/watcher.py --check    # uma verificação só (cron/debug)
+```
+
+Para rodar como serviço (restart automático, sobe no boot, logs no journal), use o
+unit pronto em [`watcher/cnpj-watcher.service`](watcher/cnpj-watcher.service) — ajuste
+`User=`, `WorkingDirectory=` e o caminho do venv, depois:
+
+```bash
+sudo cp watcher/cnpj-watcher.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cnpj-watcher
+journalctl -u cnpj-watcher -f
+```
+
 ## Endpoints
 
 | Método | Rota | Descrição |
