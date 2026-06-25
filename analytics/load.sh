@@ -16,9 +16,12 @@
 #   SAMPLE        se >0, gera amostra coerente        (default: 0 = base completa)
 #   DATA_DIR      pasta com os zips da Receita        (default: ./data; ver nota)
 #   TUNE          aplica tuning de carga (reload)     (default: 1; 0 desliga)
+#   TUNE_RAM_GB   orçamento de RAM para o tuning       (default: 16 GB)
+#                 Todos os knobs são calculados proporcionalmente a este valor.
+#                 Pico de RAM durante índices ≈ TUNE_RAM_GB * 60%.
 #   KEEP_STAGING  preserva o schema staging no fim    (default: 0 = dropa, ~27GB)
-#   MAINT_WORK_MEM/MAX_PARALLEL_MAINT/MAX_WAL_SIZE/WORK_MEM  knobs do tuning
-#                 (defaults: 2GB / 4 / 8GB / 256MB — ver analytics/tuning-carga.md)
+#   MAX_PARALLEL_MAINT  workers paralelos p/ índices  (default: 4)
+#   MAINT_WORK_MEM/WORK_MEM/MAX_WAL_SIZE  sobrescrevem o cálculo automático.
 #   NB: shared_buffers exige RESTART -> defina ANTES da carga (não é feito aqui).
 #
 # Amostra COERENTE: ancora em N estabelecimentos (head do 1º zip) e carrega apenas
@@ -35,15 +38,25 @@ DATA_DIR="${DATA_DIR:-./data}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Tuning de carga (reload-only; NÃO derruba a sessão nem exige restart) ------
-# Defaults do Postgres são minúsculos (maintenance_work_mem=64MB, work_mem=4MB...).
-# Estes valores aceleram MUITO os CREATE INDEX e o COPY. Sobrescrevíveis por env;
-# desligue tudo com TUNE=0. Detalhes e racional em analytics/tuning-carga.md.
-# OBS: `shared_buffers` exige RESTART -> fica de fora; defina-o ANTES (ver doc).
+# TUNE_RAM_GB = orçamento de RAM que o load pode usar (default: 16 GB).
+# Os knobs são calculados a partir desse único valor:
+#   maintenance_work_mem = TUNE_RAM_GB * 0.6 / (workers+1)  → pico = 60% da cota
+#   work_mem             = TUNE_RAM_GB * 0.015               → ~1.5% da cota
+#   max_wal_size         = TUNE_RAM_GB * 0.5                 → 50% da cota
+# Sobrescreva qualquer knob individualmente via env pra forçar um valor fixo.
+# Desligue tudo com TUNE=0. Detalhes: analytics/tuning-carga.md.
+# OBS: shared_buffers exige RESTART -> defina ANTES da carga (não é feito aqui).
 TUNE="${TUNE:-1}"
-MAINT_WORK_MEM="${MAINT_WORK_MEM:-2GB}"        # pico = (workers+1) x este valor!
+TUNE_RAM_GB="${TUNE_RAM_GB:-16}"
 MAX_PARALLEL_MAINT="${MAX_PARALLEL_MAINT:-4}"
-MAX_WAL_SIZE="${MAX_WAL_SIZE:-8GB}"
-WORK_MEM="${WORK_MEM:-256MB}"
+# Calculados a partir de TUNE_RAM_GB; sobrescrevíveis individualmente por env.
+_mwm=$(awk "BEGIN{printf \"%d\", ${TUNE_RAM_GB}*0.6/(${MAX_PARALLEL_MAINT}+1)*1024}")
+_wm=$(awk  "BEGIN{printf \"%d\", ${TUNE_RAM_GB}*0.015*1024}")
+_wal=$(awk "BEGIN{printf \"%d\", ${TUNE_RAM_GB}*0.5}")
+MAINT_WORK_MEM="${MAINT_WORK_MEM:-${_mwm}MB}"
+WORK_MEM="${WORK_MEM:-${_wm}MB}"
+MAX_WAL_SIZE="${MAX_WAL_SIZE:-${_wal}GB}"
+unset _mwm _wm _wal
 # Mantém o schema staging após a carga (debug). Default: dropar e liberar ~27GB.
 KEEP_STAGING="${KEEP_STAGING:-0}"
 # Carga INCREMENTAL só do regime tributário (entidades-*.zip), sem tocar no resto.
@@ -69,7 +82,8 @@ run_sql_file() { echo ">> aplicando $1"; "${PSQL[@]}" < "$1"; }
 # Requer superuser (no compose o user 'cnpj' é superuser; num servidor, conferir).
 apply_tuning() {
     [ "$TUNE" = "1" ] || { echo ">> tuning de carga DESATIVADO (TUNE=0)"; return; }
-    echo ">> aplicando tuning de carga (reload, sem restart)"
+    local pico; pico=$(awk "BEGIN{printf \"%.1f\", ${TUNE_RAM_GB}*0.6}")
+    echo ">> tuning de carga (cota=${TUNE_RAM_GB}GB | maint_work_mem=${MAINT_WORK_MEM} | workers=${MAX_PARALLEL_MAINT} | pico índices≈${pico}GB | work_mem=${WORK_MEM} | wal=${MAX_WAL_SIZE})"
     "${PSQL[@]}" \
         -c "ALTER SYSTEM SET maintenance_work_mem = '$MAINT_WORK_MEM';" \
         -c "ALTER SYSTEM SET max_parallel_maintenance_workers = $MAX_PARALLEL_MAINT;" \
