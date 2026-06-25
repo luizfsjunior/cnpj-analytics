@@ -3,5 +3,10 @@
 /api
 *.exe
 
+# watcher: estado e log são locais, não versionados
+watcher/state.json
+watcher/watcher.log
+watcher/__pycache__/
+
 # IDE
 /.idea/
