@@ -149,6 +149,9 @@ copy_zips() {
         echo "!! nenhum arquivo para $glob — pulando $table"; return
     fi
     for z in "${files[@]}"; do
+        if [ ! -f "$z" ]; then
+            echo "!! $(basename "$z") não encontrado em $DATA_DIR — pulando $table"; continue
+        fi
         echo ">> COPY $(basename "$z") -> staging.$table"
         # tr -d '\000': remove bytes NUL que aparecem em alguns campos da Receita
         # (ex.: complemento) e quebram o COPY com "unterminated CSV quoted field".

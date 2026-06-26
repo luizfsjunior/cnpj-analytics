@@ -3,7 +3,7 @@ services:
   postgres:
     image: postgres:18-trixie
     ports:
-      - 5433:5432
+      - 5435:5432
     volumes:
       - ./data/postgres:/var/lib/postgresql
     environment:
@@ -19,7 +19,7 @@ services:
   api:
     build: .
     ports:
-      - 8001:8001
+      - 8503:8503
     env_file:
       - .env
     depends_on:
