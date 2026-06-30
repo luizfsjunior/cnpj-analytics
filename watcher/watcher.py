@@ -62,6 +62,10 @@ LOAD_SH = os.getenv("CNPJ_LOAD_SH", str(BASE_DIR / "analytics" / "load.sh"))
 STATE_FILE = Path(os.getenv("CNPJ_STATE_FILE", str(Path(__file__).parent / "state.json")))
 CHECK_INTERVAL_H = int(os.getenv("CHECK_INTERVAL_H", "24"))
 LOAD_AFTER_HOUR = int(os.getenv("LOAD_AFTER_HOUR", "22"))   # 0-23
+# Teto de duração do load.sh. A carga completa com TUNE_RAM_GB baixo passa de 13h;
+# o timeout precisa ser > duração real, senão o load é morto no meio (deixando o
+# psql órfão) e o estado nunca avança -> retry infinito. Mantenha < CHECK_INTERVAL_H.
+LOAD_TIMEOUT_H = int(os.getenv("LOAD_TIMEOUT_H", "20"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -319,7 +323,7 @@ def run_load(month: str) -> bool:
             ["bash", to_wsl_path(LOAD_SH)],
             env=env,
             cwd=to_wsl_path(BASE_DIR),
-            timeout=6 * 3600,  # 6h: carga completa pode demorar
+            timeout=LOAD_TIMEOUT_H * 3600,  # carga completa pode passar de 13h
         )
         if result.returncode == 0:
             log.info("load.sh concluído com sucesso para %s.", month)
@@ -327,7 +331,7 @@ def run_load(month: str) -> bool:
         log.error("load.sh falhou (código %d) para %s.", result.returncode, month)
         return False
     except subprocess.TimeoutExpired:
-        log.error("load.sh excedeu o timeout de 6h para %s.", month)
+        log.error("load.sh excedeu o timeout de %dh para %s.", LOAD_TIMEOUT_H, month)
         return False
     except Exception as e:
         log.error("Erro ao executar load.sh: %s", e)
