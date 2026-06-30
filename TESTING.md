@@ -1,7 +1,8 @@
 # Testes manuais da API (cnpj-analytics)
 
-Bateria de `curl` cobrindo todos os endpoints, com **valores reais da amostra**
-carregada no banco `cnpj` (porta 5433). A API roda em `http://localhost:8001`.
+Bateria de `curl` cobrindo todos os endpoints, com **valores reais** da base
+completa carregada no banco `cnpj_full` (porta 5435). A API roda em
+`http://localhost:8503`.
 
 > **Proxy corporativo:** todos os comandos usam `--noproxy '*'` para evitar o `407`
 > em `localhost`.
@@ -26,7 +27,7 @@ carregada no banco `cnpj` (porta 5433). A API roda em `http://localhost:8001`.
 ## 1. Health check
 
 ```bash
-curl --noproxy '*' http://localhost:8001/healthz
+curl --noproxy '*' http://localhost:8503/healthz
 ```
 Esperado: `{"status":"ok"}` (200). Se o banco cair → 503.
 
@@ -36,16 +37,16 @@ Retorna empresa + **estabelecimentos** + **qsa** + **simples**.
 
 ```bash
 # empresa com várias filiais
-curl --noproxy '*' http://localhost:8001/empresas/52809343
+curl --noproxy '*' http://localhost:8503/empresas/52809343
 
 # empresa com quadro societário (qsa preenchido)
-curl --noproxy '*' http://localhost:8001/empresas/07594978
+curl --noproxy '*' http://localhost:8503/empresas/07594978
 
 # empresa MEI (veja o bloco "simples": opcao_mei=true)
-curl --noproxy '*' http://localhost:8001/empresas/61979497
+curl --noproxy '*' http://localhost:8503/empresas/61979497
 
 # empresa optante do Simples (opcao_simples=true)
-curl --noproxy '*' http://localhost:8001/empresas/01610972
+curl --noproxy '*' http://localhost:8503/empresas/01610972
 ```
 
 ## 3. CNPJ completo (14 dígitos)
@@ -54,7 +55,7 @@ Mesma rota, **mesma visão completa** — útil pra quem cola o CNPJ inteiro. A 
 correspondente vem com `consultado: true` e o topo traz `cnpj_consultado`.
 
 ```bash
-curl --noproxy '*' http://localhost:8001/empresas/52809343002572
+curl --noproxy '*' http://localhost:8503/empresas/52809343002572
 ```
 
 ## 3b. Filial isolada (`/filial/{14díg}`)
@@ -62,54 +63,54 @@ curl --noproxy '*' http://localhost:8001/empresas/52809343002572
 Retorna **só aquela filial** + empresa-mãe. Passar `uf` faz partition pruning (mais rápido).
 
 ```bash
-curl --noproxy '*' http://localhost:8001/filial/52809343002572
-curl --noproxy '*' 'http://localhost:8001/filial/52809343002572?uf=SP'   # recomendado
+curl --noproxy '*' http://localhost:8503/filial/52809343002572
+curl --noproxy '*' 'http://localhost:8503/filial/52809343002572?uf=SP'   # recomendado
 ```
 
 ## 4. Validação de tamanho (erros esperados)
 
 ```bash
 # 10 dígitos -> 400
-curl --noproxy '*' http://localhost:8001/empresas/1234567890
+curl --noproxy '*' http://localhost:8503/empresas/1234567890
 
 # básico inexistente (8 díg.) -> 404
-curl --noproxy '*' http://localhost:8001/empresas/00000000
+curl --noproxy '*' http://localhost:8503/empresas/00000000
 ```
 
 ## 5. Estatística: contagem de estabelecimentos (filtros opcionais)
 
 ```bash
 # sem filtro (total da base)
-curl --noproxy '*' 'http://localhost:8001/stats/empresas'
+curl --noproxy '*' 'http://localhost:8503/stats/empresas'
 
 # por UF
-curl --noproxy '*' 'http://localhost:8001/stats/empresas?uf=SP'
+curl --noproxy '*' 'http://localhost:8503/stats/empresas?uf=SP'
 
 # só ativas (situacao=2)
-curl --noproxy '*' 'http://localhost:8001/stats/empresas?uf=SP&situacao=2'
+curl --noproxy '*' 'http://localhost:8503/stats/empresas?uf=SP&situacao=2'
 
 # por CNAE
-curl --noproxy '*' 'http://localhost:8001/stats/empresas?cnae=8219999'
+curl --noproxy '*' 'http://localhost:8503/stats/empresas?cnae=8219999'
 
 # combinado: setor + UF + ativas
-curl --noproxy '*' 'http://localhost:8001/stats/empresas?cnae=8219999&uf=SP&situacao=2'
+curl --noproxy '*' 'http://localhost:8503/stats/empresas?cnae=8219999&uf=SP&situacao=2'
 ```
 
 ## 6. Estatística: capital social por natureza jurídica
 
 ```bash
-curl --noproxy '*' 'http://localhost:8001/stats/capital-por-natureza?limit=5'
-curl --noproxy '*' 'http://localhost:8001/stats/capital-por-natureza?limit=20'
+curl --noproxy '*' 'http://localhost:8503/stats/capital-por-natureza?limit=5'
+curl --noproxy '*' 'http://localhost:8503/stats/capital-por-natureza?limit=20'
 ```
 
 ## 6b. Regime tributário (distribuição por forma)
 
 ```bash
 # distribuição geral (todos os anos)
-curl --noproxy '*' 'http://localhost:8001/stats/regime'
+curl --noproxy '*' 'http://localhost:8503/stats/regime'
 
 # só o ano-base 2024
-curl --noproxy '*' 'http://localhost:8001/stats/regime?ano=2024'
+curl --noproxy '*' 'http://localhost:8503/stats/regime?ano=2024'
 ```
 
 > O regime de cada empresa também aparece embutido no `/empresas/{cnpj}`, no
@@ -121,11 +122,11 @@ curl --noproxy '*' 'http://localhost:8001/stats/regime?ano=2024'
 
 ```bash
 # empresas vinculadas a um documento (CPF mascarado)
-curl --noproxy '*' 'http://localhost:8001/socios?doc=***509360**'
-curl --noproxy '*' 'http://localhost:8001/socios?doc=***509360**&limit=10'
+curl --noproxy '*' 'http://localhost:8503/socios?doc=***509360**'
+curl --noproxy '*' 'http://localhost:8503/socios?doc=***509360**&limit=10'
 
 # sem o parâmetro doc -> 400
-curl --noproxy '*' 'http://localhost:8001/socios'
+curl --noproxy '*' 'http://localhost:8503/socios'
 ```
 
 ---
@@ -133,7 +134,7 @@ curl --noproxy '*' 'http://localhost:8001/socios'
 ## Smoke test rápido (roda tudo de uma vez)
 
 ```bash
-BASE='http://localhost:8001'
+BASE='http://localhost:8503'
 for path in \
   '/healthz' \
   '/empresas/52809343' \
@@ -155,18 +156,19 @@ done
 
 ## Inspeção direta no banco (DBeaver/DataGrip ou psql)
 
-Conexão: `jdbc:postgresql://localhost:5433/cnpj` (user/pass `cnpj`/`cnpj`),
-schema **`analytics`**. Carga completa em andamento no banco **`cnpj_full`**.
+Conexão: `jdbc:postgresql://localhost:5435/cnpj_full` (user/pass `cnpj`/`cnpj`),
+schema **`analytics`**. O banco `cnpj` (default do compose) é só a amostra/vazio;
+a base completa fica em **`cnpj_full`**, que é o banco servido pela API.
 
 ```bash
 # contagens
-docker compose exec postgres psql -U cnpj -d cnpj -c "
+docker compose exec postgres psql -U cnpj -d cnpj_full -c "
 SELECT 'empresa' t, count(*) FROM analytics.empresa
 UNION ALL SELECT 'estabelecimento', count(*) FROM analytics.estabelecimento
 UNION ALL SELECT 'socio', count(*) FROM analytics.socio
 UNION ALL SELECT 'simples', count(*) FROM analytics.simples;"
 
 # partition pruning: só deve varrer estabelecimento_sp
-docker compose exec postgres psql -U cnpj -d cnpj -c "
+docker compose exec postgres psql -U cnpj -d cnpj_full -c "
 EXPLAIN SELECT count(*) FROM analytics.estabelecimento WHERE uf='SP';"
 ```
