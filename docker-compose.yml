@@ -2,6 +2,9 @@ services:
 
   postgres:
     image: postgres:18-trixie
+    # /dev/shm (tmpfs) para os parallel workers. Default do Docker é 64MB e
+    # estoura ao criar as materialized views (GROUP BY sobre ~122M estabelecimentos).
+    shm_size: "512m"
     ports:
       - 5435:5432
     volumes:

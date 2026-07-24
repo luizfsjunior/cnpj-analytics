@@ -58,6 +58,13 @@ go run ./cmd/api          # ou: docker compose up --build api
 | `TUNE_RAM_GB` | `6` | Orçamento de RAM para o tuning. Todos os knobs (`maintenance_work_mem`, `work_mem`, `max_wal_size`) são calculados proporcionalmente. Pico durante índices ≈ 60% deste valor (~3.6 GB). |
 | `KEEP_STAGING` | `0` | Por padrão dropa o schema `staging` ao terminar (libera ~27GB na carga completa). `KEEP_STAGING=1` preserva para debug. |
 
+> **Gotcha — `/dev/shm` do postgres:** o serviço `postgres` no `docker-compose.yml` define
+> `shm_size: "512m"`. O default do Docker (64MB) é pequeno demais para os *parallel workers*
+> e faz a carga falhar ao criar as materialized views (passo [5/5]) com
+> `could not resize shared memory segment ... No space left on device`. `shm_size` só é
+> aplicado ao **criar** o container — após alterar, rode `docker compose up -d postgres`
+> (um `restart` não pega).
+
 Todas podem ser definidas no `.env` da raiz (o `load.sh` o carrega automaticamente)
 ou passadas na linha de comando — a CLI tem prioridade sobre o `.env`.
 
