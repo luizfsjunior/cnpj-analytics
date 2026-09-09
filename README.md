@@ -232,7 +232,7 @@ Dois arquivos vivem só no diretório de deploy e estão no `--exclude` do rsync
 - **`.env`** — além do `DATABASE_URL`, carrega `CNPJ_HOST_DATA_DIR` apontando para
   os dados fora da árvore de deploy.
 - **`docker-compose.override.yml`** — liga os serviços à rede externa
-  `services-net` e dá ao postgres o alias `postgres-cnpj`. O alias existe porque
+  `services-net` e dá ao postgres o alias `postgres-cnpj-rfb`. O alias existe porque
   nessa rede compartilhada o nome do serviço vira alias, e `postgres` colidiria
   com outras stacks. Um modelo comentado está em
   `docker-compose.override.example.yml`.
