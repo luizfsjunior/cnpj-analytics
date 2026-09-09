@@ -66,7 +66,11 @@ jobs:
           # reiniciada), é criado. Sem isto o --no-deps abaixo deixaria a API
           # sem banco.
           docker compose -p "$COMPOSE_PROJECT" up -d --no-recreate postgres-cnpj-rfb
-          docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps api-cnpj-rfb watcher-cnpj-rfb
+          # --remove-orphans: mata containers do projeto que não existem mais no
+          # compose (ex.: sobras de um serviço renomeado). Sem isto um watcher
+          # órfão continuaria vivo e poderia disparar uma carga em paralelo.
+          docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps --remove-orphans \
+            api-cnpj-rfb watcher-cnpj-rfb
           docker compose -p "$COMPOSE_PROJECT" ps
 
       - name: Healthcheck da API
