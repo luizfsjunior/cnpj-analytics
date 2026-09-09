@@ -35,7 +35,7 @@ func (a *App) capitalPorNatureza(w http.ResponseWriter, r *http.Request) {
 }
 
 // statsEmpresas: contagem de estabelecimentos com filtros opcionais.
-// GET /stats/empresas?uf=SP&cnae=6201501&situacao=2
+// GET /stats/empresas?uf=SP&cnae=6201501&situacao=2&municipio_ibge=3550308
 func (a *App) statsEmpresas(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT count(*) AS total FROM analytics.estabelecimento WHERE 1=1`
 	var args []any
@@ -47,6 +47,15 @@ func (a *App) statsEmpresas(w http.ResponseWriter, r *http.Request) {
 		if v, err := strconv.Atoi(cnae); err == nil {
 			args = append(args, v)
 			q += " AND cnae_fiscal_principal = $" + strconv.Itoa(len(args))
+		}
+	}
+	// Filtro por município usa o código IBGE (7 díg.), não o da Receita: a
+	// subquery traduz um no outro via dim_municipio.
+	if ibge := r.URL.Query().Get("municipio_ibge"); ibge != "" {
+		if v, err := strconv.Atoi(ibge); err == nil {
+			args = append(args, v)
+			q += " AND municipio_cod = (SELECT codigo FROM analytics.dim_municipio" +
+				" WHERE codigo_ibge = $" + strconv.Itoa(len(args)) + ")"
 		}
 	}
 	if sit := r.URL.Query().Get("situacao"); sit != "" {
@@ -133,7 +142,8 @@ func (a *App) empresaPorBasico(w http.ResponseWriter, r *http.Request, basico, h
 		       sit.descricao AS situacao, est.data_situacao_cadastral,
 		       c.descricao AS cnae_principal, est.data_inicio_atividade,
 		       est.tipo_logradouro, est.logradouro, est.numero, est.complemento,
-		       est.bairro, est.cep, m.nome AS municipio, est.uf,
+		       est.bairro, est.cep, m.nome AS municipio,
+		       m.codigo_ibge AS codigo_municipio_ibge, est.uf,
 		       est.ddd_telefone_1, est.email
 		FROM analytics.estabelecimento est
 		LEFT JOIN analytics.dim_municipio m ON m.codigo = est.municipio_cod
@@ -209,7 +219,8 @@ func (a *App) filialDetalhe(w http.ResponseWriter, r *http.Request) {
 		       est.data_situacao_cadastral, est.data_inicio_atividade,
 		       c.descricao AS cnae_principal,
 		       est.tipo_logradouro, est.logradouro, est.numero, est.complemento,
-		       est.bairro, est.cep, m.nome AS municipio, est.uf,
+		       est.bairro, est.cep, m.nome AS municipio,
+		       m.codigo_ibge AS codigo_municipio_ibge, est.uf,
 		       est.ddd_telefone_1, est.email,
 		       e.capital_social, n.descricao AS natureza_juridica
 		FROM analytics.estabelecimento est
