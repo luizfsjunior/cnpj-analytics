@@ -7,8 +7,9 @@
 #
 # Por que existe: o servidor tem uma rede externa compartilhada `services-net`
 # por onde as stacks se enxergam. Nela, o alias de rede de um serviço é o nome
-# do serviço — e "postgres" colidiria com o de outras stacks. Por isso o alias
-# explícito `postgres-cnpj`. Note que o override NÃO renomeia serviços (Compose
+# do serviço — e "postgres" colidiria com o de outras stacks. Por isso os aliases
+# explícitos com sufixo -rfb (nome herdado dos serviços antigos, que outras stacks
+# já usam). Note que o override NÃO renomeia serviços (Compose
 # faz merge por chave; renomear exigiria mudar o arquivo base e faria o Compose
 # criar containers novos, inclusive o do banco).
 #
@@ -24,14 +25,14 @@ services:
       default:
       services-net:
         aliases:
-          - postgres-cnpj
+          - postgres-cnpj-rfb
 
   api:
     networks:
       default:
       services-net:
         aliases:
-          - api-cnpj
+          - api-cnpj-rfb
 
   watcher:
     networks:
