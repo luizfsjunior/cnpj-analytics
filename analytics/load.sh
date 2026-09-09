@@ -33,7 +33,7 @@
 # as empresas/sócios/simples cujo CNPJ básico aparece nesses estabelecimentos —
 # garantindo que joins empresa↔filial↔sócio↔simples funcionem de ponta a ponta.
 #
-# Pré-requisitos: docker compose up -d postgres ; unzip e rg (ripgrep) no PATH.
+# Pré-requisitos: docker compose up -d postgres-cnpj-rfb ; unzip e rg (ripgrep) no PATH.
 # ============================================================================
 set -euo pipefail
 
@@ -103,17 +103,19 @@ if [ ! -e "$DATA_DIR/entidades-lucro-real.zip" ] && [ -e "../minha-receita/data/
     DATA_DIR="../minha-receita/data"
 fi
 
+# Nome do serviço do banco no compose (só usado no modo `docker compose exec`).
+PG_SERVICE="${PG_SERVICE:-postgres-cnpj-rfb}"
 # Conexão com o postgres — dois modos:
-#  - PGHOST setado (ex.: dentro do compose, serviço `watcher`): psql direto via
-#    TCP. Requer PGPASSWORD. NÃO precisa do socket do Docker dentro do container.
-#  - senão (dev no host): via `docker compose exec` no container `postgres`.
+#  - PGHOST setado (ex.: dentro do compose, serviço `watcher-cnpj-rfb`): psql
+#    direto via TCP. Requer PGPASSWORD. NÃO precisa do socket do Docker.
+#  - senão (dev no host): via `docker compose exec` no serviço $PG_SERVICE.
 # -T = sem TTY (essencial para o pipe via STDIN e p/ não injetar \r na saída).
 if [ -n "${PGHOST:-}" ]; then
     PSQL=(psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "${PGUSER:-cnpj}" -d "$DB" -v ON_ERROR_STOP=1)
     PSQL_ADMIN=(psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "${PGUSER:-cnpj}" -d postgres -v ON_ERROR_STOP=1)
 else
-    PSQL=(docker compose exec -T postgres psql -U cnpj -d "$DB" -v ON_ERROR_STOP=1)
-    PSQL_ADMIN=(docker compose exec -T postgres psql -U cnpj -d postgres -v ON_ERROR_STOP=1)
+    PSQL=(docker compose exec -T "$PG_SERVICE" psql -U cnpj -d "$DB" -v ON_ERROR_STOP=1)
+    PSQL_ADMIN=(docker compose exec -T "$PG_SERVICE" psql -U cnpj -d postgres -v ON_ERROR_STOP=1)
 fi
 COPY_OPTS="(FORMAT csv, DELIMITER ';', QUOTE '\"', ENCODING 'LATIN9')"
 
