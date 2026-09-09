@@ -3,11 +3,12 @@
 #   docker compose build watcher        # context: . (definido no compose)
 FROM python:3.12-slim
 
-# Dependências do load.sh: psql (cliente), unzip e ripgrep (rg). bash p/ rodá-lo.
+# Dependências do load.sh: psql (cliente), unzip, ripgrep (rg) e curl (baixa as
+# fontes do de-para IBGE). bash p/ rodá-lo.
 # O watcher fala com o postgres via TCP (PGHOST), então NÃO precisa do Docker CLI
 # nem do socket do host — só o cliente psql.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash postgresql-client unzip ripgrep ca-certificates \
+        bash postgresql-client unzip ripgrep curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
