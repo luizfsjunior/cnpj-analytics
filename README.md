@@ -157,7 +157,7 @@ journalctl -u cnpj-watcher -f
 |---|---|---|
 | GET | `/healthz` | Liveness + ping no banco |
 | GET | `/stats/capital-por-natureza?limit=10` | Ranking de capital social por natureza jurídica (via materialized view) |
-| GET | `/stats/empresas?uf=SP&cnae=6201501&situacao=2` | Contagem de estabelecimentos com filtros opcionais |
+| GET | `/stats/empresas?uf=SP&cnae=6201501&situacao=2&municipio_ibge=3550308` | Contagem de estabelecimentos com filtros opcionais |
 | GET | `/stats/regime?ano=2024` | Distribuição de empresas por forma de tributação (lucro real/presumido/arbitrado/imunes-isentas). `ano` opcional |
 | GET | `/empresas/{cnpj}` | Visão completa: empresa + estabelecimentos (com endereço) + QSA + Simples/MEI + **regime tributário** (lista por filial/ano). Aceita **8 ou 14 dígitos** — com 14, marca a filial consultada (`consultado: true` + `cnpj_consultado`) |
 | GET | `/filial/{cnpj}?uf=SP` | Dados **só daquela filial** (14 díg.) + empresa-mãe. `uf` é opcional mas recomendado: habilita *partition pruning* (varre 1 partição em vez de 27) |
@@ -168,6 +168,41 @@ journalctl -u cnpj-watcher -f
 > (14 díg.). Com 14 dígitos, a filial correspondente vem com `consultado: true` e o
 > CNPJ pedido aparece em `cnpj_consultado`. Qualquer outro tamanho retorna `400`.
 
+### Município na resposta (código IBGE)
+
+O endereço de cada estabelecimento traz o município em três campos — nome, UF e
+**código IBGE de 7 dígitos**, que é a chave usada para cruzar com outras bases:
+
+```json
+{
+  "cnpj": "52809343000103",
+  "bairro": "BELA VISTA",
+  "municipio": "SAO PAULO",
+  "codigo_municipio_ibge": 3550308,
+  "uf": "SP"
+}
+```
+
+Onde cada um aparece:
+
+| Rota | Onde |
+|---|---|
+| `/empresas/{cnpj}` | em cada item de `estabelecimentos` |
+| `/filial/{cnpj}` | no objeto raiz |
+| `/stats/*` | não aparece (são agregados); ali o IBGE entra como **filtro**, via `municipio_ibge` |
+
+Detalhes que evitam surpresa em quem consome:
+
+- `codigo_municipio_ibge` é **inteiro**, não string. Códigos IBGE de município têm
+  sempre 7 dígitos e nunca começam com zero, então não há dígito a perder — mas se
+  o consumidor espera texto, a formatação é do lado dele.
+- O código **não** é o da Receita. O `Municipios.csv` traz só o código SIAFI (4
+  díg.); a tradução é feita na carga (ver [De-para de municípios](analytics/fontes-dados.md)).
+- O único registro sem código é `EXTERIOR` (SIAFI 9707): vem com
+  `codigo_municipio_ibge: null` e `uf: "EX"` — não é município e não tem código IBGE.
+- Se todos os estabelecimentos vierem com `codigo_municipio_ibge: null`, o de-para
+  não foi aplicado nesse banco: rode `IBGE_ONLY=1 DB=<banco> bash analytics/load.sh`.
+
 ### Parâmetros (query string)
 
 | Rota | Parâmetro | Tipo | Obrigatório | Default | Observação |
@@ -175,6 +210,7 @@ journalctl -u cnpj-watcher -f
 | `/stats/empresas` | `uf` | texto (2 letras) | não | — | filtra por UF, ex. `SP` |
 | `/stats/empresas` | `cnae` | inteiro | não | — | CNAE fiscal principal, ex. `6201501` |
 | `/stats/empresas` | `situacao` | inteiro | não | — | situação cadastral: `2`=ativa, `8`=baixada, `3`=suspensa, `4`=inapta, `1`=nula |
+| `/stats/empresas` | `municipio_ibge` | inteiro (7 díg.) | não | — | código **IBGE** do município, ex. `3550308`. Código inexistente devolve `total: 0`, não `404` |
 | `/stats/capital-por-natureza` | `limit` | inteiro | não | `10` | teto `200` |
 | `/stats/regime` | `ano` | inteiro | não | — | filtra o ano-base, ex. `2024` (dados 2016–2024) |
 | `/filial/{cnpj}` | `uf` | texto (2 letras) | não | — | UF da filial; habilita *partition pruning* (consulta mais rápida) |
@@ -188,6 +224,7 @@ Os filtros de `/stats/empresas` são **combináveis** (AND). Valores não numér
 
 ```bash
 curl 'http://localhost:8001/stats/empresas?uf=DF&situacao=2'
+curl 'http://localhost:8001/stats/empresas?municipio_ibge=3550308&situacao=2'  # São Paulo
 curl 'http://localhost:8001/stats/capital-por-natureza?limit=5'
 curl 'http://localhost:8001/empresas/52809343'         # 8 díg.: empresa + filiais
 curl 'http://localhost:8001/empresas/52809343002572'   # 14 díg.: uma filial
