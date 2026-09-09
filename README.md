@@ -18,6 +18,8 @@ cmd/api/          entrypoint do servidor
 internal/db/      pool de conexão pgx
 internal/api/     servidor, rotas e handlers
 analytics/        DDL + ETL do schema (SQL puro + load.sh)
+watcher/          watcher.py — baixa os zips do mês e dispara a carga
+.github/workflows/ deploy.yml — CI/CD no runner self-hosted (ver "Deploy")
 ```
 
 ## Como rodar
@@ -33,6 +35,9 @@ SAMPLE=20000 bash analytics/load.sh      # amostra COERENTE de ~20k estab. (ráp
 # 1b) regime tributário — fonte SEPARADA; carga incremental sem tocar no resto
 REGIME_ONLY=1 DB=cnpj_full bash analytics/load.sh
 
+# 1c) de-para de municípios (código IBGE) — incremental, não toca no resto
+IBGE_ONLY=1 DB=cnpj_full bash analytics/load.sh
+
 # 2) sobe a API
 go run ./cmd/api          # ou: docker compose up --build api
 ```
@@ -47,6 +52,17 @@ go run ./cmd/api          # ou: docker compose up --build api
 > completo já os inclui se estiverem no `DATA_DIR`; senão, use `REGIME_ONLY=1 bash
 > analytics/load.sh` depois (carga incremental só do regime).
 
+> **Código de município = IBGE.** O `Municipios.csv` da Receita só traz o código do
+> **SIAFI** (4 díg.). O `load.sh` baixa o de-para do TABMUN (Tesouro Nacional) e a
+> lista de municípios da API do IBGE, e preenche `dim_municipio.codigo_ibge` e
+> `dim_municipio.uf` (`analytics/ibge_transform.sql`). Na carga completa isso roda
+> automaticamente depois do transform; numa base **já carregada**, use
+> `IBGE_ONLY=1 bash analytics/load.sh` — assim não é preciso redisparar a carga
+> mensal só para atualizar o de-para. As fontes ficam cacheadas no `DATA_DIR`
+> (`tabmun.csv`, `ibge_municipios.json`) e são revalidadas a cada
+> `IBGE_CACHE_MAX_DAYS` dias, então uma queda de rede não impede a carga. Detalhes e
+> regras de casamento: [`analytics/fontes-dados.md`](analytics/fontes-dados.md).
+
 ### Variáveis do `load.sh`
 
 | Var | Default | Efeito |
@@ -56,6 +72,10 @@ go run ./cmd/api          # ou: docker compose up --build api
 | `DATA_DIR` | `./data` | Pasta dos zips (cai para `../minha-receita/data` se necessário). |
 | `TUNE` | `1` | Aplica tuning de carga (reload-only). `TUNE=0` desliga. **`shared_buffers` exige restart** — defina-o antes (ver [`tuning-carga.md`](analytics/tuning-carga.md)). |
 | `TUNE_RAM_GB` | `6` | Orçamento de RAM para o tuning. Todos os knobs (`maintenance_work_mem`, `work_mem`, `max_wal_size`) são calculados proporcionalmente. Pico durante índices ≈ 60% deste valor (~3.6 GB). |
+| `IBGE_ONLY` | `0` | Se `1`, roda **só** o de-para IBGE (`dim_municipio.codigo_ibge`/`uf`) numa base já carregada e sai. Não aplica tuning, não recria schema, não recarrega zip nenhum. |
+| `IBGE_REFRESH` | `0` | Se `1`, rebaixa `tabmun.csv`/`ibge_municipios.json` mesmo com cache válido. |
+| `IBGE_CACHE_MAX_DAYS` | `25` | Idade máxima do cache das fontes do IBGE. Vencido, rebaixa; se o download falhar, segue com o cache. |
+| `IBGE_CACHE_DIR` | `$DATA_DIR` | Onde ficam `tabmun.csv` e `ibge_municipios.json`. |
 | `KEEP_STAGING` | `0` | Por padrão dropa o schema `staging` ao terminar (libera ~27GB na carga completa). `KEEP_STAGING=1` preserva para debug. |
 
 > **Gotcha — `/dev/shm` do postgres:** o serviço `postgres` no `docker-compose.yml` define
@@ -93,10 +113,15 @@ O watcher tem seu próprio serviço no `docker-compose.yml`. Ele fala com o post
 só do cliente `psql` (já na imagem). Aponte o volume `/data` para a pasta dos zips:
 
 ```bash
-# edite o mapeamento ./data:/data no compose se os zips ficam em outro lugar
+# se os zips ficam fora do repo, aponte CNPJ_HOST_DATA_DIR no .env
 docker compose up -d postgres watcher
 docker compose logs -f watcher
 ```
+
+O compose usa `${CNPJ_HOST_DATA_DIR:-./data}` nos dois bind mounts (PGDATA do
+postgres e `/data` do watcher). Sem a variável, tudo fica em `./data` dentro do
+repo — bom para a máquina local. No servidor ela aponta para fora da árvore de
+deploy, para que o `rsync --delete` do CI/CD não encoste nos dados.
 
 O estado (último mês carregado) persiste no volume `watcher_state`. Na primeira
 subida, se houver mês novo no share, a carga dispara após `LOAD_AFTER_HOUR`.
@@ -167,3 +192,81 @@ curl 'http://localhost:8001/empresas/52809343'         # 8 díg.: empresa + fili
 curl 'http://localhost:8001/empresas/52809343002572'   # 14 díg.: uma filial
 curl 'http://localhost:8001/socios?doc=***509360**'
 ```
+
+## Deploy (CI/CD)
+
+`.github/workflows/deploy.yml` roda no **runner self-hosted** do `srv-controladoria`
+(org `Porto-Seco-SDM`, `workFolder=/opt/applications`), disparado por push em
+`master` ou manualmente (`workflow_dispatch`). Só existe um ambiente: **prod**.
+
+Caminhos no servidor:
+
+| Caminho | O quê |
+|---|---|
+| `/opt/applications/cnpj-analytics/cnpj-analytics` | checkout do runner (`GITHUB_WORKSPACE`) — descartável, o runner manda nele |
+| `/opt/applications/cnpj-analytics/prod` | destino do `rsync --delete`; é daqui que o `docker compose` sobe |
+| `/opt/applications/cnpj-analytics/data` | zips da Receita + PGDATA (~72 GB) — **fora** da árvore de deploy |
+
+Etapas: build da imagem da API (não há testes Go; se não compilar, não sobe) →
+`bash -n load.sh` + `py_compile watcher.py` → `rsync` → `docker compose up -d
+--build --no-deps api watcher` → healthcheck em `/healthz`.
+
+### Gotchas que o workflow existe para evitar
+
+- **O postgres nunca é recriado.** O `up` cita só `api` e `watcher` e usa
+  `--no-deps`. Recriar o container do banco por causa de uma mudança de compose
+  significaria perder uma carga de horas.
+- **O nome do projeto é fixo (`-p cnpj-analytics`).** O volume nomeado
+  `cnpj-analytics_watcher_state` guarda o último mês carregado; com outro nome de
+  projeto o Docker cria um volume vazio e o watcher dispara uma carga completa.
+- **`.env` e `docker-compose.override.yml` são configuração do servidor**, não
+  versionados (o override liga o container à rede `services-net`). Estão no
+  `--exclude` do rsync, senão o `--delete` os apagaria a cada deploy.
+- **`data/` também está no `--exclude`** — cinto e suspensório, já que
+  `CNPJ_HOST_DATA_DIR` já a tira de dentro do diretório de deploy.
+
+### Configuração do servidor (não versionada)
+
+Dois arquivos vivem só no diretório de deploy e estão no `--exclude` do rsync:
+
+- **`.env`** — além do `DATABASE_URL`, carrega `CNPJ_HOST_DATA_DIR` apontando para
+  os dados fora da árvore de deploy.
+- **`docker-compose.override.yml`** — liga os serviços à rede externa
+  `services-net` e dá ao postgres o alias `postgres-cnpj`. O alias existe porque
+  nessa rede compartilhada o nome do serviço vira alias, e `postgres` colidiria
+  com outras stacks. Um modelo comentado está em
+  `docker-compose.override.example.yml`.
+
+Historicamente o servidor resolvia essa colisão **renomeando** os serviços para
+`postgres-cnpj-rfb` / `api-cnpj-rfb` / `watcher-cnpj-rfb` num
+`docker-compose.yml` modificado localmente — o que impedia qualquer deploy
+automatizado (o rsync sobrescreveria a modificação). O alias no override faz o
+mesmo trabalho sem tocar no arquivo base.
+
+### Migração (uma vez, do layout antigo)
+
+Antes do primeiro deploy tudo morava em `/opt/applications/api-cnpj/cnpj-analytics`,
+com os dados dentro e o compose modificado à mão. Origem e destino estão no mesmo
+filesystem (`/dev/sda1`), então o `mv` é um rename instantâneo.
+
+```bash
+cd /opt/applications/api-cnpj/cnpj-analytics
+docker compose -p cnpj-analytics down          # postgres para aqui, uma única vez
+
+mkdir -p /opt/applications/cnpj-analytics/prod
+mv data /opt/applications/cnpj-analytics/data
+
+# configuração do host vai para o diretório de deploy
+cp .env /opt/applications/cnpj-analytics/prod/.env
+echo 'CNPJ_HOST_DATA_DIR=/opt/applications/cnpj-analytics/data'   >> /opt/applications/cnpj-analytics/prod/.env
+# override novo (aliases, sem renomear serviços) — modelo no repo
+cp docker-compose.override.example.yml    /opt/applications/cnpj-analytics/prod/docker-compose.override.yml
+
+# o estado do watcher é volume nomeado pelo projeto: sobrevive intacto
+docker volume inspect cnpj-analytics_watcher_state
+```
+
+Depois disso, um push em `master` dispara o workflow e a stack sobe do novo
+diretório. Os containers passam a se chamar `cnpj-analytics-{postgres,api,watcher}-1`
+(antes, `...-cnpj-rfb-1`). A pasta antiga fica como backup do clone git e pode ser
+removida quando o primeiro deploy estiver validado.

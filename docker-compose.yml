@@ -8,7 +8,7 @@ services:
     ports:
       - 5435:5432
     volumes:
-      - ./data/postgres:/var/lib/postgresql
+      - ${CNPJ_HOST_DATA_DIR:-./data}/postgres:/var/lib/postgresql
     environment:
       POSTGRES_PASSWORD: cnpj
       POSTGRES_USER: cnpj
@@ -50,9 +50,14 @@ services:
       LOAD_AFTER_HOUR: "22"
       # Orçamento de RAM da carga (knobs calculados a partir daqui).
       TUNE_RAM_GB: "6"
+      # Teto de duração de uma carga completa. 72h porque no servidor a carga
+      # cheia (~122M estabelecimentos) já passou de 20h, o default do load.sh.
+      LOAD_TIMEOUT_H: "${LOAD_TIMEOUT_H:-72}"
     volumes:
-      # Pasta com os zips da Receita. Ajuste a origem ao caminho real no servidor.
-      - ./data:/data
+      # Pasta com os zips da Receita, no HOST. No servidor CNPJ_HOST_DATA_DIR
+      # aponta para fora da árvore de deploy (o rsync do CI não pode encostar
+      # nos ~72 GB); local, o default ./data basta.
+      - ${CNPJ_HOST_DATA_DIR:-./data}:/data
       # Persiste o estado (último mês carregado) entre restarts.
       - watcher_state:/state
     restart: unless-stopped
