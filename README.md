@@ -26,7 +26,7 @@ watcher/          watcher.py — baixa os zips do mês e dispara a carga
 
 ```bash
 cp .env.example .env
-docker compose up -d postgres
+docker compose up -d postgres-cnpj-rfb
 
 # 1) cria o schema e carrega os dados (zips da Receita em ./data)
 bash analytics/load.sh                   # carga COMPLETA (leva horas)
@@ -78,7 +78,7 @@ go run ./cmd/api          # ou: docker compose up --build api
 | `IBGE_CACHE_DIR` | `$DATA_DIR` | Onde ficam `tabmun.csv` e `ibge_municipios.json`. |
 | `KEEP_STAGING` | `0` | Por padrão dropa o schema `staging` ao terminar (libera ~27GB na carga completa). `KEEP_STAGING=1` preserva para debug. |
 
-> **Gotcha — `/dev/shm` do postgres:** o serviço `postgres` no `docker-compose.yml` define
+> **Gotcha — `/dev/shm` do postgres:** o serviço `postgres-cnpj-rfb` no `docker-compose.yml` define
 > `shm_size: "512m"`. O default do Docker (64MB) é pequeno demais para os *parallel workers*
 > e faz a carga falhar ao criar as materialized views (passo [5/5]) com
 > `could not resize shared memory segment ... No space left on device`. `shm_size` só é
@@ -109,12 +109,12 @@ comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo
 ### Rodar com Docker (recomendado)
 
 O watcher tem seu próprio serviço no `docker-compose.yml`. Ele fala com o postgres
-**direto por TCP** (`PGHOST=postgres`), então **não precisa do socket do Docker** —
+**direto por TCP** (`PGHOST=postgres-cnpj-rfb`), então **não precisa do socket do Docker** —
 só do cliente `psql` (já na imagem). Aponte o volume `/data` para a pasta dos zips:
 
 ```bash
 # se os zips ficam fora do repo, aponte CNPJ_HOST_DATA_DIR no .env
-docker compose up -d postgres watcher
+docker compose up -d postgres-cnpj-rfb watcher-cnpj-rfb
 docker compose logs -f watcher
 ```
 
@@ -129,13 +129,14 @@ subida, se houver mês novo no share, a carga dispara após `LOAD_AFTER_HOUR`.
 ### Rodar no host (alternativa, sem container)
 
 Se preferir rodar fora de container, o `load.sh` cai automaticamente para
-`docker compose exec postgres` quando `PGHOST` **não** está setado:
+`docker compose exec postgres-cnpj-rfb` quando `PGHOST` **não** está setado (o
+serviço vem de `PG_SERVICE`):
 
 ```bash
 sudo apt install -y unzip ripgrep            # rg + unzip no PATH; docker já instalado
 python3 -m venv watcher/.venv
 watcher/.venv/bin/pip install -r watcher/requirements.txt
-docker compose up -d postgres
+docker compose up -d postgres-cnpj-rfb
 watcher/.venv/bin/python watcher/watcher.py            # loop (ou --check p/ uma vez)
 ```
 
@@ -209,11 +210,11 @@ Caminhos no servidor:
 
 Etapas: build da imagem da API (não há testes Go; se não compilar, não sobe) →
 `bash -n load.sh` + `py_compile watcher.py` → `rsync` → `docker compose up -d
---build --no-deps api watcher` → healthcheck em `/healthz`.
+--build --no-deps api-cnpj-rfb watcher-cnpj-rfb` → healthcheck em `/healthz`.
 
 ### Gotchas que o workflow existe para evitar
 
-- **O postgres nunca é recriado.** O `up` cita só `api` e `watcher` e usa
+- **O postgres nunca é recriado.** O `up` de build cita só a API e o watcher e usa
   `--no-deps`. Recriar o container do banco por causa de uma mudança de compose
   significaria perder uma carga de horas.
 - **O nome do projeto é fixo (`-p cnpj-analytics`).** O volume nomeado
@@ -231,17 +232,18 @@ Dois arquivos vivem só no diretório de deploy e estão no `--exclude` do rsync
 
 - **`.env`** — além do `DATABASE_URL`, carrega `CNPJ_HOST_DATA_DIR` apontando para
   os dados fora da árvore de deploy.
-- **`docker-compose.override.yml`** — liga os serviços à rede externa
-  `services-net` e dá ao postgres o alias `postgres-cnpj-rfb`. O alias existe porque
-  nessa rede compartilhada o nome do serviço vira alias, e `postgres` colidiria
-  com outras stacks. Um modelo comentado está em
+- **`docker-compose.override.yml`** — liga os três serviços à rede externa
+  `services-net`, por onde as outras stacks (Airflow, Protheus, controladoria)
+  acessam este banco em `postgres-cnpj-rfb:5432`. Um modelo comentado está em
   `docker-compose.override.example.yml`.
 
-Historicamente o servidor resolvia essa colisão **renomeando** os serviços para
-`postgres-cnpj-rfb` / `api-cnpj-rfb` / `watcher-cnpj-rfb` num
-`docker-compose.yml` modificado localmente — o que impedia qualquer deploy
-automatizado (o rsync sobrescreveria a modificação). O alias no override faz o
-mesmo trabalho sem tocar no arquivo base.
+> **Por que os serviços têm sufixo `-cnpj-rfb`.** O Compose publica o nome do
+> serviço como alias de DNS em **toda** rede a que o container se liga. Na
+> `services-net`, um serviço chamado `postgres` colidiria com o banco do Airflow,
+> que também está lá — o DNS devolveria os dois IPs e as conexões cairiam no banco
+> errado de forma intermitente. O sufixo no arquivo base resolve isso de uma vez;
+> tentar resolver só com `aliases` no override não funciona, porque o alias com o
+> nome do serviço continua sendo publicado.
 
 ### Migração (uma vez, do layout antigo)
 
@@ -266,7 +268,6 @@ cp docker-compose.override.example.yml    /opt/applications/cnpj-analytics/prod/
 docker volume inspect cnpj-analytics_watcher_state
 ```
 
-Depois disso, um push em `master` dispara o workflow e a stack sobe do novo
-diretório. Os containers passam a se chamar `cnpj-analytics-{postgres,api,watcher}-1`
-(antes, `...-cnpj-rfb-1`). A pasta antiga fica como backup do clone git e pode ser
-removida quando o primeiro deploy estiver validado.
+Depois disso, um push em `master` no repo da org dispara o workflow e a stack sobe
+do novo diretório. A pasta antiga fica como backup do clone git e pode ser
+removida quando o deploy estiver validado.

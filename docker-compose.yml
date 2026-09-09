@@ -1,6 +1,10 @@
+# Os serviços levam o sufixo -cnpj-rfb de propósito. No servidor eles entram na
+# rede externa compartilhada `services-net`, onde o Compose publica o nome do
+# serviço como alias de DNS — um serviço chamado "postgres" colidiria com o
+# banco do Airflow, que também está lá, e as conexões cairiam no banco errado.
 services:
 
-  postgres:
+  postgres-cnpj-rfb:
     image: postgres:18-trixie
     # /dev/shm (tmpfs) para os parallel workers. Default do Docker é 64MB e
     # estoura ao criar as materialized views (GROUP BY sobre ~122M estabelecimentos).
@@ -19,26 +23,26 @@ services:
       timeout: 5s
       retries: 5
 
-  api:
+  api-cnpj-rfb:
     build: .
     ports:
       - 8503:8503
     env_file:
       - .env
     depends_on:
-      postgres:
+      postgres-cnpj-rfb:
         condition: service_healthy
 
-  watcher:
+  watcher-cnpj-rfb:
     build:
       context: .
       dockerfile: watcher/Dockerfile
     depends_on:
-      postgres:
+      postgres-cnpj-rfb:
         condition: service_healthy
     environment:
       # Conexão direta com o postgres (sem socket do Docker). Ver load.sh.
-      PGHOST: postgres
+      PGHOST: postgres-cnpj-rfb
       PGPORT: 5432
       PGUSER: cnpj
       PGPASSWORD: cnpj

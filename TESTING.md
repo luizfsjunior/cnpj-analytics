@@ -172,26 +172,26 @@ a base completa fica em **`cnpj_full`**, que é o banco servido pela API.
 
 ```bash
 # contagens
-docker compose exec postgres psql -U cnpj -d cnpj_full -c "
+docker compose exec postgres-cnpj-rfb psql -U cnpj -d cnpj_full -c "
 SELECT 'empresa' t, count(*) FROM analytics.empresa
 UNION ALL SELECT 'estabelecimento', count(*) FROM analytics.estabelecimento
 UNION ALL SELECT 'socio', count(*) FROM analytics.socio
 UNION ALL SELECT 'simples', count(*) FROM analytics.simples;"
 
 # partition pruning: só deve varrer estabelecimento_sp
-docker compose exec postgres psql -U cnpj -d cnpj_full -c "
+docker compose exec postgres-cnpj-rfb psql -U cnpj -d cnpj_full -c "
 EXPLAIN SELECT count(*) FROM analytics.estabelecimento WHERE uf='SP';"
 
 # de-para IBGE: esperado 5572 municípios, 5571 com código IBGE, 0 sem UF
 # (o único sem código é o 'EXTERIOR', SIAFI 9707)
-docker compose exec postgres psql -U cnpj -d cnpj_full -c "
+docker compose exec postgres-cnpj-rfb psql -U cnpj -d cnpj_full -c "
 SELECT count(*) AS municipios,
        count(codigo_ibge) AS com_ibge,
        count(*) FILTER (WHERE uf IS NULL) AS sem_uf
 FROM analytics.dim_municipio;"
 
 # âncoras do de-para
-docker compose exec postgres psql -U cnpj -d cnpj_full -c "
+docker compose exec postgres-cnpj-rfb psql -U cnpj -d cnpj_full -c "
 SELECT codigo, nome, codigo_ibge, uf FROM analytics.dim_municipio
 WHERE codigo IN (7107, 6001, 1182, 9707) ORDER BY codigo;"
 ```

@@ -65,8 +65,8 @@ jobs:
           # que o compose tenha mudado; se não existe (1ª subida, ou máquina
           # reiniciada), é criado. Sem isto o --no-deps abaixo deixaria a API
           # sem banco.
-          docker compose -p "$COMPOSE_PROJECT" up -d --no-recreate postgres
-          docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps api watcher
+          docker compose -p "$COMPOSE_PROJECT" up -d --no-recreate postgres-cnpj-rfb
+          docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps api-cnpj-rfb watcher-cnpj-rfb
           docker compose -p "$COMPOSE_PROJECT" ps
 
       - name: Healthcheck da API

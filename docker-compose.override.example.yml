@@ -5,13 +5,12 @@
 # CI/CD o preserva via --exclude. Este exemplo existe para que a configuração
 # não viva só na cabeça de quem tem SSH.
 #
-# Por que existe: o servidor tem uma rede externa compartilhada `services-net`
-# por onde as stacks se enxergam. Nela, o alias de rede de um serviço é o nome
-# do serviço — e "postgres" colidiria com o de outras stacks. Por isso os aliases
-# explícitos com sufixo -rfb (nome herdado dos serviços antigos, que outras stacks
-# já usam). Note que o override NÃO renomeia serviços (Compose
-# faz merge por chave; renomear exigiria mudar o arquivo base e faria o Compose
-# criar containers novos, inclusive o do banco).
+# O que ele faz: liga os três serviços à rede externa compartilhada
+# `services-net`, por onde as outras stacks (Airflow, Protheus, controladoria)
+# enxergam este banco. Não precisa de `aliases`: o Compose já publica o nome do
+# serviço como alias de DNS, e os nomes do compose base já têm o sufixo
+# -cnpj-rfb justamente para não colidirem nessa rede. Consumidores externos
+# conectam em `postgres-cnpj-rfb:5432`.
 #
 # Uso: copie para docker-compose.override.yml no diretório de deploy.
 # ============================================================================
@@ -20,21 +19,17 @@ networks:
     external: true
 
 services:
-  postgres:
+  postgres-cnpj-rfb:
     networks:
       default:
       services-net:
-        aliases:
-          - postgres-cnpj-rfb
 
-  api:
+  api-cnpj-rfb:
     networks:
       default:
       services-net:
-        aliases:
-          - api-cnpj-rfb
 
-  watcher:
+  watcher-cnpj-rfb:
     networks:
       default:
       services-net:
