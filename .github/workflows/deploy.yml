@@ -1,0 +1,77 @@
+# ============================================================================
+# Deploy prod — runner self-hosted do srv-controladoria (workFolder /opt/applications).
+#
+# Particularidades deste repo (leia antes de mexer):
+#
+#  * O postgres NUNCA é recriado. Ele guarda ~65 GB de PGDATA em bind mount e
+#    uma recriação acidental derrubaria uma carga de horas. Por isso o `up` cita
+#    só api/watcher e usa --no-deps.
+#  * Os dados (zips + PGDATA) vivem FORA da árvore de deploy, apontados por
+#    CNPJ_HOST_DATA_DIR no .env do servidor. O rsync --delete abaixo nunca chega
+#    perto deles.
+#  * COMPOSE_PROJECT é fixo em "cnpj-analytics": o volume nomeado
+#    cnpj-analytics_watcher_state guarda o último mês carregado. Mudar o nome do
+#    projeto cria um volume vazio e o watcher dispara uma carga completa.
+#  * .env e docker-compose.override.yml são configuração do servidor, não
+#    versionados — ficam de fora do --delete.
+# ============================================================================
+name: Deploy prod
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod-cnpj-analytics
+  cancel-in-progress: false
+
+env:
+  DEPLOY_DIR: /opt/applications/cnpj-analytics/prod
+  COMPOSE_PROJECT: cnpj-analytics
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      # Não há testes Go no repo; o build é o portão: se não compilar, não sobe.
+      - name: Build da imagem da API
+        run: docker build -t cnpj-analytics-api:ci .
+
+      - name: Sintaxe do load.sh e do watcher
+        run: |
+          bash -n analytics/load.sh
+          python3 -m py_compile watcher/watcher.py
+
+      - name: Sincroniza para o diretório de deploy
+        run: |
+          mkdir -p "$DEPLOY_DIR"
+          rsync -a --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'data/' \
+            --exclude '.env' \
+            --exclude 'docker-compose.override.yml' \
+            "$GITHUB_WORKSPACE/" "$DEPLOY_DIR/"
+
+      - name: Sobe api e watcher (postgres intocado)
+        working-directory: /opt/applications/cnpj-analytics/prod
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps api watcher
+          docker compose -p "$COMPOSE_PROJECT" ps
+
+      - name: Healthcheck da API
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8503/healthz >/dev/null; then
+              echo "API respondendo"; exit 0
+            fi
+            sleep 2
+          done
+          echo "API não respondeu em 60s — logs:"
+          docker compose -p "$COMPOSE_PROJECT" -f "$DEPLOY_DIR/docker-compose.yml" logs --tail 50 api
+          exit 1

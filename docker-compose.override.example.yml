@@ -1,0 +1,39 @@
+# ============================================================================
+# Exemplo do docker-compose.override.yml do SERVIDOR (srv-controladoria).
+#
+# O arquivo real NÃO é versionado (é configuração daquele host) e o rsync do
+# CI/CD o preserva via --exclude. Este exemplo existe para que a configuração
+# não viva só na cabeça de quem tem SSH.
+#
+# Por que existe: o servidor tem uma rede externa compartilhada `services-net`
+# por onde as stacks se enxergam. Nela, o alias de rede de um serviço é o nome
+# do serviço — e "postgres" colidiria com o de outras stacks. Por isso o alias
+# explícito `postgres-cnpj`. Note que o override NÃO renomeia serviços (Compose
+# faz merge por chave; renomear exigiria mudar o arquivo base e faria o Compose
+# criar containers novos, inclusive o do banco).
+#
+# Uso: copie para docker-compose.override.yml no diretório de deploy.
+# ============================================================================
+networks:
+  services-net:
+    external: true
+
+services:
+  postgres:
+    networks:
+      default:
+      services-net:
+        aliases:
+          - postgres-cnpj
+
+  api:
+    networks:
+      default:
+      services-net:
+        aliases:
+          - api-cnpj
+
+  watcher:
+    networks:
+      default:
+      services-net:
