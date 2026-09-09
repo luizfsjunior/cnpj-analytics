@@ -8,6 +8,7 @@
 #
 # Uso (a partir da raiz do repo):
 #   bash analytics/load.sh                  # carga COMPLETA no banco `cnpj`
+#   IBGE_ONLY=1 bash analytics/load.sh      # só (re)preenche o de-para IBGE
 #   SAMPLE=20000 bash analytics/load.sh     # amostra COERENTE de ~20k estabelecimentos
 #   DB=cnpj_full bash analytics/load.sh     # carga completa em outro banco
 #
@@ -20,6 +21,10 @@
 #                 Todos os knobs são calculados proporcionalmente a este valor.
 #                 Pico de RAM durante índices ≈ TUNE_RAM_GB * 60%.
 #   KEEP_STAGING  preserva o schema staging no fim    (default: 0 = dropa, ~27GB)
+#   IBGE_ONLY     só o de-para IBGE (incremental)      (default: 0)
+#   IBGE_REFRESH  rebaixa tabmun/IBGE ignorando cache  (default: 0)
+#   IBGE_CACHE_MAX_DAYS  idade máx. do cache em dias    (default: 25)
+#   IBGE_CACHE_DIR onde cachear as fontes do IBGE      (default: $DATA_DIR)
 #   MAX_PARALLEL_MAINT  workers paralelos p/ índices  (default: 4)
 #   MAINT_WORK_MEM/WORK_MEM/MAX_WAL_SIZE  sobrescrevem o cálculo automático.
 #   NB: shared_buffers exige RESTART -> defina ANTES da carga (não é feito aqui).
@@ -41,6 +46,10 @@ if [ -f "$HERE/../.env" ]; then
     while IFS='=' read -r _k _v; do
         _k="${_k%$'\r'}"; _v="${_v%$'\r'}"              # tolera CRLF (.env salvo no Windows)
         case "$_k" in ''|\#*) continue;; esac          # ignora vazias/comentários
+        _v="${_v%%[[:space:]]#*}"                       # corta comentário inline (` # ...`)
+        _k="${_k#"${_k%%[![:space:]]*}"}"; _k="${_k%"${_k##*[![:space:]]}"}"   # trim
+        _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"   # trim
+        case "$_k" in ''|*[!A-Za-z0-9_]*) continue;; esac  # nome de var inválido
         [ -n "${!_k+x}" ] && continue                   # já definida no shell: mantém
         export "$_k=$_v"
     done < "$HERE/../.env"
@@ -75,6 +84,15 @@ unset _mwm _wm _wal
 KEEP_STAGING="${KEEP_STAGING:-0}"
 # Carga INCREMENTAL só do regime tributário (entidades-*.zip), sem tocar no resto.
 REGIME_ONLY="${REGIME_ONLY:-0}"
+# Carga INCREMENTAL só do de-para IBGE (dim_municipio.codigo_ibge/uf), sem tocar no resto.
+IBGE_ONLY="${IBGE_ONLY:-0}"
+# Cache das fontes do IBGE (tabmun.csv + ibge_municipios.json). Ficam no DATA_DIR
+# para que a carga do watcher não dependa de rede: baixa uma vez, reusa depois.
+IBGE_CACHE_DIR="${IBGE_CACHE_DIR:-$DATA_DIR}"
+# 1 = rebaixa as fontes mesmo com cache válido (usar quando um município novo sair).
+IBGE_REFRESH="${IBGE_REFRESH:-0}"
+# Idade máxima do cache em dias; passou disso, rebaixa (cai no cache se a rede falhar).
+IBGE_CACHE_MAX_DAYS="${IBGE_CACHE_MAX_DAYS:-25}"
 
 # Os zips ficam no repo minha-receita; permita sobrescrever via DATA_DIR.
 if [ ! -e "$DATA_DIR/Empresas0.zip" ] && [ -e "../minha-receita/data/Empresas0.zip" ]; then
@@ -212,6 +230,112 @@ copy_regime() {
     done
 }
 
+# --- de-para IBGE ------------------------------------------------------------
+# O Municipios.csv da Receita só traz (codigo SIAFI, nome). O código IBGE vem de
+# duas fontes externas, cacheadas em $IBGE_CACHE_DIR para que a carga disparada
+# pelo watcher não fique refém da rede:
+#   tabmun.csv            TABMUN do Tesouro (CKAN) — de-para SIAFI -> IBGE + UF.
+#   ibge_municipios.json  API de localidades do IBGE — fallback por nome, cobre
+#                         municípios novos que o TABMUN ainda não publicou.
+TABMUN_CKAN_URL="${TABMUN_CKAN_URL:-https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=abb968cb-3710-4f85-89cf-875c91b9c7f6}"
+IBGE_API_URL="${IBGE_API_URL:-https://servicodados.ibge.gov.br/api/v1/localidades/municipios}"
+
+# Baixa $2 para $1; mantém o cache anterior se o download falhar ou vier vazio.
+# O cache vale por IBGE_CACHE_MAX_DAYS dias — assim a carga mensal do watcher
+# reatualiza o de-para (municípios novos) sem rebaixar a cada execução avulsa.
+# Retorna != 0 só quando não há download NEM cache.
+fetch_cached() {
+    local dest="$1" url="$2" label="$3"
+    local vencido=""
+    [ -n "$(find "$dest" -mtime "+$IBGE_CACHE_MAX_DAYS" 2>/dev/null)" ] && vencido=1
+    if [ -s "$dest" ] && [ "$IBGE_REFRESH" != "1" ] && [ -z "$vencido" ]; then
+        echo ">> $label: usando cache $dest"; return 0
+    fi
+    mkdir -p "$(dirname "$dest")"
+    local tmp="$dest.tmp"
+    echo ">> $label: baixando $url"
+    if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "$url" -o "$tmp" && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$dest"; return 0
+    fi
+    rm -f "$tmp"
+    if [ -s "$dest" ]; then
+        echo "!! $label: download falhou — seguindo com o cache $dest"; return 0
+    fi
+    echo "!! $label: download falhou e não há cache em $dest"; return 1
+}
+
+# A URL do CSV do tabmun muda quando o Tesouro republica o recurso, então ela é
+# descoberta pelo package_show do CKAN. Se o CKAN não responder, cai na última
+# URL conhecida (suficiente enquanto o recurso não for substituído).
+tabmun_url() {
+    local meta
+    meta="$(curl -fsSL --retry 2 --max-time 60 "$TABMUN_CKAN_URL" 2>/dev/null || true)"
+    local url
+    url="$(printf '%s' "$meta" | grep -o 'https://[^"]*tabmun[^"]*[.]csv' | head -1)"
+    if [ -n "$url" ]; then printf '%s' "$url"; return 0; fi
+    printf '%s' "https://www.tesourotransparente.gov.br/ckan/dataset/abb968cb-3710-4f85-89cf-875c91b9c7f6/resource/eebb3bc6-9eea-4496-8bcf-304f33155282/download/tabmun.csv"
+}
+
+# Baixa (ou reusa o cache), cria as stagings e faz o COPY das duas fontes.
+copy_ibge_sources() {
+    local tabmun="$IBGE_CACHE_DIR/tabmun.csv"
+    local ibgejson="$IBGE_CACHE_DIR/ibge_municipios.json"
+    fetch_cached "$tabmun"   "$(tabmun_url)"  "tabmun"   || return 1
+    fetch_cached "$ibgejson" "$IBGE_API_URL"  "ibge-api" || return 1
+
+    "${PSQL[@]}" <<'SQL'
+CREATE SCHEMA IF NOT EXISTS staging;
+DROP TABLE IF EXISTS staging.tabmun;
+CREATE TABLE staging.tabmun (   -- tabmun.csv: ';', SEM header, campos com padding
+    codigo_siafi text,
+    cnpj         text,
+    nome         text,
+    uf           text,
+    codigo_ibge  text
+);
+DROP TABLE IF EXISTS staging.ibge_raw;
+CREATE TABLE staging.ibge_raw (doc text);   -- JSON da API do IBGE, linha única
+DROP TABLE IF EXISTS staging.ibge_municipios;
+CREATE TABLE staging.ibge_municipios (codigo_ibge integer, nome text);
+SQL
+
+    echo ">> COPY tabmun.csv -> staging.tabmun"
+    # QUOTE em \b: o arquivo não é quoted, e o " default quebraria num nome com aspas.
+    tr -d '\000\r' < "$tabmun" \
+        | "${PSQL[@]}" -c "\copy staging.tabmun FROM STDIN (FORMAT csv, DELIMITER ';', QUOTE E'\b', ENCODING 'LATIN9')"
+
+    echo ">> COPY ibge_municipios.json -> staging.ibge_raw"
+    # O JSON vem numa linha só; delimitador/quote em bytes de controle que não
+    # ocorrem no conteúdo fazem o COPY tratá-lo como um único campo text.
+    tr -d '\000\r' < "$ibgejson" \
+        | "${PSQL[@]}" -c "\copy staging.ibge_raw FROM STDIN (FORMAT csv, DELIMITER E'\x01', QUOTE E'\x02', ENCODING 'UTF8')"
+
+    "${PSQL[@]}" -c "INSERT INTO staging.ibge_municipios (codigo_ibge, nome)
+                     SELECT (e->>'id')::integer, e->>'nome'
+                     FROM staging.ibge_raw, jsonb_array_elements(doc::jsonb) e;"
+}
+
+# Preenche dim_municipio.codigo_ibge/uf. Não recria nem trunca nada mais.
+load_ibge() {
+    copy_ibge_sources || return 1
+    run_sql_file "$HERE/ibge_transform.sql"
+}
+
+# --- Carga INCREMENTAL só do de-para IBGE (dim_municipio.codigo_ibge/uf).
+# Serve para preencher o IBGE numa base JÁ carregada, sem esperar o próximo mês
+# nem redisparar o load completo (que recarregaria os zips do mês corrente).
+if [ "$IBGE_ONLY" = "1" ]; then
+    echo "== de-para IBGE (INCREMENTAL) -> banco '$DB' | cache: $IBGE_CACHE_DIR =="
+    ensure_db
+    load_ibge
+    "${PSQL[@]}" -c "SELECT count(*) AS municipios,
+                            count(codigo_ibge) AS com_ibge,
+                            count(*) FILTER (WHERE uf IS NULL) AS sem_uf
+                     FROM analytics.dim_municipio;"
+    echo "== concluído (IBGE, banco '$DB') =="
+    exit 0
+fi
+
 # --- Carga INCREMENTAL só do regime tributário (substitui o antigo load_regime.sh).
 # Não aplica tuning, não recria o schema, não dropa o staging das outras tabelas.
 if [ "$REGIME_ONLY" = "1" ]; then
@@ -283,6 +407,12 @@ fi
 
 echo "== [4/5] transform (staging -> analytics) =="
 run_sql_file "$HERE/03_transform.sql"
+
+# de-para IBGE em dim_municipio (fontes externas + cache). Nem falha de rede nem
+# validação reprovada podem derrubar uma carga de horas: avisa e segue — o passo
+# é reexecutável isoladamente depois.
+echo "== de-para IBGE (dim_municipio) =="
+load_ibge || echo "!! de-para IBGE NÃO aplicado (rede ou validação) — rode depois: IBGE_ONLY=1 DB=$DB bash analytics/load.sh"
 
 echo "== [5/5] índices + materialized views =="
 run_sql_file "$HERE/04_indexes.sql"

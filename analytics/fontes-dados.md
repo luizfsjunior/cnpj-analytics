@@ -82,3 +82,57 @@ Caso o share de regime saia do ar, o recorte imunes/isentas existe noutro format
 > ⚠️ A partir de jul/2026 o CNPJ passa a aceitar letras (alfanumérico) — os tipos
 > `char(n)` no schema já preveem isso, mas a limpeza `regexp_replace(cnpj,'\D','')`
 > do regime precisará ser revista quando os dados alfanuméricos chegarem.
+
+## 3. De-para de municípios → código IBGE
+
+O `Municipios.csv` da Receita traz **só** `codigo;descricao`, e esse código é o do
+**SIAFI** (4 dígitos), não o do IBGE (7 dígitos). Como o código IBGE é a chave que
+usamos para cruzar com qualquer outra base pública, `analytics.dim_municipio` guarda
+os dois — `codigo` (Receita/SIAFI) e `codigo_ibge` —, além da `uf`, que também não
+vem no arquivo da Receita.
+
+Duas fontes externas, baixadas pelo `load.sh` e **cacheadas em `$IBGE_CACHE_DIR`**
+(default: o próprio `DATA_DIR`):
+
+| Arquivo no cache | Fonte | Papel |
+|---|---|---|
+| `tabmun.csv` | TABMUN do Tesouro Nacional, via CKAN (`package_show` do dataset `abb968cb-…`) | **Primária**: de-para SIAFI → IBGE + UF. `codigo_siafi;cnpj;nome;uf;codigo_ibge`, `;`, sem cabeçalho, campos com padding. |
+| `ibge_municipios.json` | API de localidades do IBGE (`servicodados.ibge.gov.br/api/v1/localidades/municipios`) | **Fallback** por nome normalizado, para municípios novos ainda ausentes do TABMUN. |
+
+A URL do CSV do TABMUN não é fixa (o Tesouro republica o recurso), por isso ela é
+descoberta no CKAN a cada download; há uma URL de último recurso embutida no
+`load.sh` caso o CKAN não responda.
+
+### Como o de-para é aplicado (`analytics/ibge_transform.sql`)
+
+1. `UPDATE` a partir do TABMUN casando `dim_municipio.codigo = codigo_siafi`
+   (descarta as 19 linhas "DEMAIS MUNICIPIOS", que vêm com `codigo_ibge = 0000000`).
+2. Para o que sobrou sem código, casa por **nome normalizado** (maiúsculas, sem
+   acento, só `[A-Z0-9]`) contra a lista do IBGE, exigindo **match único no país** —
+   homônimo fica `NULL` de propósito, melhor um furo visível que um município errado.
+3. `uf` de quem veio pelo fallback sai dos **2 primeiros dígitos do código IBGE**
+   (11=RO … 53=DF).
+4. `EXTERIOR` (SIAFI 9707) não é município: fica sem IBGE, com `uf = 'EX'` (mesma
+   sigla da partição `analytics.estabelecimento_ex`).
+5. Validações que **abortam** o passo se algo furar: total ≥ 5.570, ninguém sem
+   `codigo_ibge` além do EXTERIOR, ninguém sem `uf`, nenhum código IBGE repetido, e
+   as âncoras São Paulo (7107 → 3550308) e Rio de Janeiro (6001 → 3304557).
+
+Situação em set/2026: dos 5.572 municípios do arquivo da Receita, **5.571 recebem
+código IBGE**; o único sem é o `EXTERIOR`. O TABMUN cobre 5.570 — Boa Esperança do
+Norte/MT (SIAFI 1182 → IBGE 5101837) só é resolvido pelo fallback da API do IBGE.
+
+### Rodando isoladamente
+
+```bash
+# preenche/atualiza só o de-para, numa base já carregada (não toca no resto)
+IBGE_ONLY=1 DB=cnpj_full bash analytics/load.sh
+
+# força rebaixar as fontes ignorando o cache
+IBGE_ONLY=1 IBGE_REFRESH=1 DB=cnpj_full bash analytics/load.sh
+```
+
+Na carga completa o passo roda sozinho depois do `03_transform.sql` (a
+`dim_municipio` é truncada lá, então o de-para precisa vir depois). Falha de rede
+ou validação reprovada **não derruba** a carga: imprime o aviso e segue, e o passo
+pode ser refeito com o `IBGE_ONLY=1` acima.

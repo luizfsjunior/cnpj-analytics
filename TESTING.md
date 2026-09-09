@@ -94,7 +94,17 @@ curl --noproxy '*' 'http://localhost:8503/stats/empresas?cnae=8219999'
 
 # combinado: setor + UF + ativas
 curl --noproxy '*' 'http://localhost:8503/stats/empresas?cnae=8219999&uf=SP&situacao=2'
+
+# por município — o código é o do IBGE (7 díg.), não o da Receita
+curl --noproxy '*' 'http://localhost:8503/stats/empresas?municipio_ibge=3550308'          # São Paulo/SP
+curl --noproxy '*' 'http://localhost:8503/stats/empresas?municipio_ibge=3550308&uf=SP'    # + partition pruning
 ```
+
+> O `municipio_ibge` é traduzido para o código da Receita via `dim_municipio`. Se o
+> de-para ainda não tiver sido aplicado (ver `IBGE_ONLY=1` no README), a subquery não
+> acha o município e a contagem volta **0** — sintoma clássico de `codigo_ibge` nulo.
+> `/empresas/{cnpj}` e `/filial/{cnpj}` trazem o mesmo código no campo
+> `codigo_municipio_ibge` de cada estabelecimento.
 
 ## 6. Estatística: capital social por natureza jurídica
 
@@ -171,4 +181,26 @@ UNION ALL SELECT 'simples', count(*) FROM analytics.simples;"
 # partition pruning: só deve varrer estabelecimento_sp
 docker compose exec postgres psql -U cnpj -d cnpj_full -c "
 EXPLAIN SELECT count(*) FROM analytics.estabelecimento WHERE uf='SP';"
+
+# de-para IBGE: esperado 5572 municípios, 5571 com código IBGE, 0 sem UF
+# (o único sem código é o 'EXTERIOR', SIAFI 9707)
+docker compose exec postgres psql -U cnpj -d cnpj_full -c "
+SELECT count(*) AS municipios,
+       count(codigo_ibge) AS com_ibge,
+       count(*) FILTER (WHERE uf IS NULL) AS sem_uf
+FROM analytics.dim_municipio;"
+
+# âncoras do de-para
+docker compose exec postgres psql -U cnpj -d cnpj_full -c "
+SELECT codigo, nome, codigo_ibge, uf FROM analytics.dim_municipio
+WHERE codigo IN (7107, 6001, 1182, 9707) ORDER BY codigo;"
 ```
+
+Esperado nas âncoras:
+
+| codigo (SIAFI) | nome | codigo_ibge | uf |
+|---|---|---|---|
+| 1182 | BOA ESPERANCA DO NORTE | 5101837 | MT |
+| 6001 | RIO DE JANEIRO | 3304557 | RJ |
+| 7107 | SAO PAULO | 3550308 | SP |
+| 9707 | EXTERIOR | *(null)* | EX |

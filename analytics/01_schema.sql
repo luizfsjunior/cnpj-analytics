@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS analytics.dim_cnae (
 CREATE TABLE IF NOT EXISTS analytics.dim_municipio (
     codigo       integer PRIMARY KEY,          -- código Receita (4 díg.)
     nome         text NOT NULL,
-    codigo_ibge  integer,                      -- preenchido depois (tabmun IBGE)
+    codigo_ibge  integer,                      -- 7 díg.; preenchido por ibge_transform.sql
     uf           char(2)                       -- idem (não vem no Municipios.csv)
 );
 
