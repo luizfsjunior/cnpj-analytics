@@ -32,7 +32,7 @@ env:
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    runs-on: [self-hosted, srv-controladoria]
     steps:
       - uses: actions/checkout@v4
         with:
