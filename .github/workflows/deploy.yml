@@ -61,6 +61,11 @@ jobs:
       - name: Sobe api e watcher (postgres intocado)
         working-directory: /opt/applications/cnpj-analytics/prod
         run: |
+          # --no-recreate: se o container do banco já existe, não é tocado nem
+          # que o compose tenha mudado; se não existe (1ª subida, ou máquina
+          # reiniciada), é criado. Sem isto o --no-deps abaixo deixaria a API
+          # sem banco.
+          docker compose -p "$COMPOSE_PROJECT" up -d --no-recreate postgres
           docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps api watcher
           docker compose -p "$COMPOSE_PROJECT" ps
 
