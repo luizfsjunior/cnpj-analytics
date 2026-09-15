@@ -19,6 +19,7 @@ internal/db/      pool de conexão pgx
 internal/api/     servidor, rotas e handlers
 analytics/        DDL + ETL do schema (SQL puro + load.sh)
 watcher/          watcher.py — baixa os zips do mês e dispara a carga
+watcher/tests/    testes do watcher (pytest + responses, sem rede)
 .github/workflows/ deploy.yml — CI/CD no runner self-hosted (ver "Deploy")
 ```
 
@@ -105,6 +106,55 @@ comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo
 | `CHECK_INTERVAL_H` | `24` | Intervalo entre verificações do share. |
 | `LOAD_AFTER_HOUR` | `22` | Hora mínima (0–23) para iniciar a carga. |
 | `TUNE_RAM_GB` | `6` | Orçamento de RAM da carga (ver tabela do `load.sh`). |
+
+### Por que o download tem retry (gotcha importante)
+
+O share da Receita **derruba silenciosamente de 22% a 35% das conexões**: o TLS
+completa, o servidor aceita o GET e nunca envia um byte — a requisição só morre no
+read timeout. Medido contra o share real: 14 de 37 zips travaram assim numa única
+passada, e a taxa oscila ao longo do dia. Não é banda nem arquivo específico; é
+sorteio por conexão, e a requisição seguinte costuma ir bem em menos de 1s.
+
+Antes de isso ser tratado, cada trava custava **24h**: o mês inteiro era descartado
+e só retentado na verificação seguinte.
+
+O tratamento vive em `_download_one` e `_propfind`:
+
+- **7 tentativas por requisição**, esperando `RETRY_BACKOFF` = 0/2/5/15/30/30/60s
+  antes de cada uma — 142s no pior caso, pago só quando falha.
+- Só erro **transitório** é retentado (timeout, conexão, 5xx). Um 404/403 falha na
+  hora, sem gastar backoff à toa.
+- **2ª passada** no fim de `download_month`: os arquivos que esgotaram as tentativas
+  ganham um ciclo completo novo antes de o mês ser dado como perdido.
+- O **PROPFIND usa a mesma política**. Sem isso, uma listagem de 18 KB que trava
+  derruba o ciclo inteiro mesmo com os 20 GB de zips já em disco.
+
+Duas medições explicam as escolhas: as travas se comportam como **sorteio
+independente** (retry após 0s teve a mesma taxa de sucesso do retry após 15s, 71%
+vs 83% com n pequeno), então o que protege é a **quantidade** de tentativas e não
+esperas longas; e um arquivo já foi observado falhando **4 vezes seguidas**, o que
+descarta curvas curtas.
+
+O resume (`.part` + header `Range`) trabalha junto: cada tentativa retoma de onde
+parou, então uma trava no meio de um `Estabelecimentos0.zip` de 2 GB não custa os
+2 GB de novo. Por isso `_download_attempt` relê o tamanho do `.part` **a cada
+tentativa** — reaproveitar um valor antigo pediria `Range` do offset errado,
+duplicando bytes e corrompendo o zip em silêncio.
+
+### Testes do watcher
+
+`pytest` + `responses` (HTTP mockado — nenhuma rede, roda em ~0,1s):
+
+```bash
+pip install -r watcher/requirements-dev.txt
+python -m pytest watcher/tests -q
+```
+
+Cobrem retry e resume do download e dos PROPFIND: trava sem bytes, trava no meio do
+stream (com asserção do `Range` da tentativa seguinte), 4xx sem retry, 5xx com
+retry, servidor ignorando o `Range`, 416 com `.part` já completo e a 2ª passada.
+As deps de teste ficam em `watcher/requirements-dev.txt` e **não** entram na imagem:
+o `Dockerfile` copia só o `requirements.txt`.
 
 ### Rodar com Docker (recomendado)
 

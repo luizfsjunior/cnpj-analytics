@@ -3,9 +3,12 @@ watcher.py — verifica diariamente o share Nextcloud da Receita Federal e dispa
 o load.sh quando detecta dados novos, mas só após as LOAD_AFTER_HOUR (default 22h).
 
 Fluxo:
-  1. Verifica o share (PROPFIND leve) a cada CHECK_INTERVAL_H horas.
+  1. Verifica o share (PROPFIND leve) a cada CHECK_INTERVAL_H horas. O PROPFIND
+     usa o mesmo retry/backoff do download: o share trava conexões silenciosamente
+     e sem retry uma listagem de 18 KB derruba o ciclo todo (ver RETRY_BACKOFF).
   2. Detectou mês novo -> BAIXA os 37 zips do mês para CNPJ_DATA_DIR em QUALQUER
-     horário (download retomável: .part + header Range). Os entidades-*.zip
+     horário (download retomável: .part + header Range, com retry/backoff por
+     arquivo e uma 2ª passada no fim — ver RETRY_BACKOFF). Os entidades-*.zip
      (regime) são baixados em best-effort (falha neles não bloqueia o load).
   3. Com os zips em disco, aguarda a janela (>= LOAD_AFTER_HOUR) e só então
      dispara o load.sh — às 22h a carga começa na hora, sem esperar rede.
@@ -67,6 +70,19 @@ LOAD_AFTER_HOUR = int(os.getenv("LOAD_AFTER_HOUR", "22"))   # 0-23
 # psql órfão) e o estado nunca avança -> retry infinito. Mantenha < CHECK_INTERVAL_H.
 LOAD_TIMEOUT_H = int(os.getenv("LOAD_TIMEOUT_H", "20"))
 
+# O share da RFB derruba de 22% a 35% das conexões de forma silenciosa: completa
+# o TLS, aceita o GET e nunca envia um byte. A taxa oscila ao longo do dia.
+# As travas se comportam como sorteio independente por conexão — medindo o retry
+# após 0s contra 15s, a espera não mudou a taxa de sucesso (71% vs 83%, dentro do
+# ruído), e as falhas não vêm em rajada. Logo o que protege é a QUANTIDADE de
+# tentativas, e não esperas longas; a curva cresce devagar só para não martelar o
+# servidor. Uma espera por tentativa (a 1ª não espera): 142s no pior caso por
+# arquivo, contra as 24h de um ciclo perdido.
+RETRY_BACKOFF = (0, 2, 5, 15, 30, 30, 60)
+# (connect, read). O read de 60s detecta a conexão travada na metade do tempo do
+# antigo 120s e ainda deixa folga larga para gaps entre chunks num zip de 2 GB.
+DOWNLOAD_TIMEOUT = (30, 60)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -98,24 +114,47 @@ def save_state(state: dict) -> None:
 # WebDAV PROPFIND
 # ---------------------------------------------------------------------------
 
+def _propfind(url: str, token: str, oque: str) -> ET.Element | None:
+    """PROPFIND com a mesma política de retry do download (RETRY_BACKOFF).
+
+    A trava de conexão do share também pega aqui, e sem retry uma listagem de
+    18 KB que trava derruba o ciclo inteiro — 24h até a próxima verificação,
+    mesmo com os zips já em disco. Retorna a raiz do XML, ou None se desistiu.
+    """
+    total = len(RETRY_BACKOFF)
+    for tentativa, espera in enumerate(RETRY_BACKOFF, start=1):
+        if espera:
+            log.info("aguardando %ds antes da tentativa %d/%d (%s)",
+                     espera, tentativa, total, oque)
+            time.sleep(espera)
+        try:
+            resp = requests.request(
+                "PROPFIND",
+                url,
+                auth=(token, ""),
+                headers={"Depth": "1"},
+                timeout=DOWNLOAD_TIMEOUT,
+                proxies={"http": "", "https": ""},  # ignora proxy corporativo
+                verify=True,
+            )
+            resp.raise_for_status()
+            return ET.fromstring(resp.text)
+        except requests.RequestException as e:
+            if not _is_retryable(e):
+                log.error("Erro ao %s: %s (erro não transitório, sem retry)", oque, e)
+                return None
+            log.error("tentativa %d/%d de %s falhou: %s", tentativa, total, oque, e)
+
+    log.error("desisti de %s após %d tentativas.", oque, total)
+    return None
+
+
 def fetch_available_months() -> list[str]:
     """Retorna lista de meses disponíveis no share (ex: ['2025-12', '2026-01'])."""
-    try:
-        resp = requests.request(
-            "PROPFIND",
-            SHARE_URL,
-            auth=(SHARE_TOKEN, ""),
-            headers={"Depth": "1"},
-            timeout=30,
-            proxies={"http": "", "https": ""},  # ignora proxy corporativo
-            verify=True,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        log.error("Erro ao consultar share Nextcloud: %s", e)
+    root = _propfind(SHARE_URL, SHARE_TOKEN, "consultar share Nextcloud")
+    if root is None:
         return []
 
-    root = ET.fromstring(resp.text)
     ns = {"D": "DAV:"}
     months = []
     for href in root.findall(".//D:href", ns):
@@ -138,22 +177,10 @@ def latest_month() -> str | None:
 def fetch_month_files(month: str) -> list[tuple[str, int | None]]:
     """PROPFIND na pasta do mês -> lista de (nome_arquivo.zip, tamanho_bytes)."""
     url = f"{SHARE_URL}{month}/"
-    try:
-        resp = requests.request(
-            "PROPFIND",
-            url,
-            auth=(SHARE_TOKEN, ""),
-            headers={"Depth": "1"},
-            timeout=30,
-            proxies={"http": "", "https": ""},
-            verify=True,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        log.error("Erro ao listar arquivos de %s: %s", month, e)
+    root = _propfind(url, SHARE_TOKEN, f"listar arquivos de {month}")
+    if root is None:
         return []
 
-    root = ET.fromstring(resp.text)
     ns = {"D": "DAV:"}
     files: list[tuple[str, int | None]] = []
     for r in root.findall(".//D:response", ns):
@@ -169,14 +196,25 @@ def fetch_month_files(month: str) -> list[tuple[str, int | None]]:
     return files
 
 
-def _download_one(url: str, token: str, target: Path, size: int | None) -> bool:
-    """Baixa `url` para `target`, com resume (.part + header Range). Pula se já
-    existe completo (tamanho confere). Retorna True em sucesso."""
-    if target.exists() and size is not None and target.stat().st_size == size:
-        log.info("já baixado (ok): %s", target.name)
-        return True
+def _is_retryable(exc: requests.RequestException) -> bool:
+    """Só vale retentar o que é transitório. Um 404/403 não melhora com espera —
+    falhar na hora evita gastar os 52s de backoff por arquivo à toa."""
+    if isinstance(exc, requests.HTTPError):
+        resp = exc.response
+        return resp is not None and resp.status_code >= 500
+    return isinstance(
+        exc,
+        (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError),
+    )
 
-    part = target.with_suffix(target.suffix + ".part")
+
+def _download_attempt(url: str, token: str, target: Path, part: Path, size: int | None) -> bool:
+    """Uma tentativa de download. Retorna True se o arquivo ficou completo em
+    `target`; False se veio truncado (vale retentar). Erros de rede sobem como
+    RequestException para quem chama classificar."""
+    # `have` é relido do .part A CADA tentativa: a tentativa anterior pode ter
+    # gravado bytes antes de travar, e pedir Range a partir de um valor velho
+    # duplicaria esse trecho -> zip corrompido silenciosamente.
     have = part.stat().st_size if part.exists() else 0
     headers = {"Range": f"bytes={have}-"} if have else {}
     mode = "ab" if have else "wb"
@@ -185,26 +223,22 @@ def _download_one(url: str, token: str, target: Path, size: int | None) -> bool:
     else:
         log.info("baixando %s%s", target.name, f" ({size} bytes)" if size else "")
 
-    try:
-        with requests.get(
-            url, auth=(token, ""), headers=headers, stream=True, timeout=120,
-            proxies={"http": "", "https": ""}, verify=True,
-        ) as resp:
-            # 416 = Range não satisfatível: .part já está completo -> finaliza.
-            if resp.status_code == 416 and size is not None and have == size:
-                part.rename(target)
-                return True
-            # Se o servidor ignorar o Range (200 em vez de 206), recomeça do zero.
-            if have and resp.status_code == 200:
-                have, mode = 0, "wb"
-            resp.raise_for_status()
-            with open(part, mode) as fh:
-                for chunk in resp.iter_content(chunk_size=1 << 20):  # 1 MiB
-                    if chunk:
-                        fh.write(chunk)
-    except requests.RequestException as e:
-        log.error("falha ao baixar %s: %s (.part preservado p/ retomar)", target.name, e)
-        return False
+    with requests.get(
+        url, auth=(token, ""), headers=headers, stream=True, timeout=DOWNLOAD_TIMEOUT,
+        proxies={"http": "", "https": ""}, verify=True,
+    ) as resp:
+        # 416 = Range não satisfatível: .part já está completo -> finaliza.
+        if resp.status_code == 416 and size is not None and have == size:
+            part.rename(target)
+            return True
+        # Se o servidor ignorar o Range (200 em vez de 206), recomeça do zero.
+        if have and resp.status_code == 200:
+            have, mode = 0, "wb"
+        resp.raise_for_status()
+        with open(part, mode) as fh:
+            for chunk in resp.iter_content(chunk_size=1 << 20):  # 1 MiB
+                if chunk:
+                    fh.write(chunk)
 
     if size is not None and part.stat().st_size != size:
         log.error("%s: tamanho %d != esperado %d (.part preservado)",
@@ -212,6 +246,37 @@ def _download_one(url: str, token: str, target: Path, size: int | None) -> bool:
         return False
     part.rename(target)
     return True
+
+
+def _download_one(url: str, token: str, target: Path, size: int | None) -> bool:
+    """Baixa `url` para `target`, com resume (.part + header Range) e retry com
+    backoff (RETRY_BACKOFF). Pula se já existe completo (tamanho confere).
+    Retorna True em sucesso."""
+    if target.exists() and size is not None and target.stat().st_size == size:
+        log.info("já baixado (ok): %s", target.name)
+        return True
+
+    part = target.with_suffix(target.suffix + ".part")
+    total = len(RETRY_BACKOFF)
+    for tentativa, espera in enumerate(RETRY_BACKOFF, start=1):
+        if espera:
+            log.info("aguardando %ds antes da tentativa %d/%d de %s",
+                     espera, tentativa, total, target.name)
+            time.sleep(espera)
+        try:
+            if _download_attempt(url, token, target, part, size):
+                return True
+        except requests.RequestException as e:
+            if not _is_retryable(e):
+                log.error("falha ao baixar %s: %s (erro não transitório, sem retry)",
+                          target.name, e)
+                return False
+            log.error("tentativa %d/%d de %s falhou: %s (.part preservado p/ retomar)",
+                      tentativa, total, target.name, e)
+
+    log.error("desisti de %s após %d tentativas (.part preservado p/ retomar)",
+              target.name, total)
+    return False
 
 
 def purge_orphan_zips(dest: Path, keep_names: set[str]) -> None:
@@ -252,14 +317,28 @@ def download_month(month: str) -> bool:
     purge_orphan_zips(dest, keep)
 
     log.info("Baixando %d arquivos de %s para %s...", len(files), month, dest)
-    ok = True
+    falhas: list[tuple[str, int | None]] = []
     for name, size in files:
         url = f"{SHARE_URL}{month}/{name}"
         if not _download_one(url, SHARE_TOKEN, dest / name, size):
-            ok = False
-    if not ok:
-        log.error("Um ou mais zips de %s falharam.", month)
-        return False
+            falhas.append((name, size))
+
+    # 2ª passada: quem esgotou as tentativas na 1ª ganha um ciclo completo novo.
+    # Com ~35% de falha por conexão, só o retry por arquivo ainda deixaria uma
+    # chance alta de perder o mês inteiro (e esperar 24h pelo próximo ciclo).
+    if falhas:
+        log.warning("2ª passada: retentando %d arquivo(s) de %s: %s",
+                    len(falhas), month, ", ".join(n for n, _ in falhas))
+        restantes = []
+        for name, size in falhas:
+            url = f"{SHARE_URL}{month}/{name}"
+            if not _download_one(url, SHARE_TOKEN, dest / name, size):
+                restantes.append(name)
+        if restantes:
+            log.error("Zips de %s que falharam nas duas passadas: %s",
+                      month, ", ".join(restantes))
+            return False
+        log.info("2ª passada recuperou todos os arquivos que faltavam.")
     log.info("Download dos zips principais de %s concluído.", month)
 
     # Regime tributário (best-effort) — share próprio (REGIME_TOKEN), na raiz.
