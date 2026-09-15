@@ -10,3 +10,7 @@ watcher/__pycache__/
 
 # IDE
 /.idea/
+
+# pytest
+.pytest_cache/
+watcher/tests/__pycache__/
