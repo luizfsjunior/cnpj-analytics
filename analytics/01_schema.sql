@@ -17,10 +17,38 @@
 CREATE SCHEMA IF NOT EXISTS analytics;
 
 -- Helper: datas no formato AAAAMMDD, com '0'/'00000000'/'' representando nulo.
+--
+-- A função é TOTAL (spec-carga.md, decisão 6 / R2.1): para qualquer entrada
+-- existe saída, e a saída ruim é NULL. Antes ela delegava ao `to_date`, que no
+-- PostgreSQL 18 ESTOURA em data inexistente — `20200231` não rola para 02/03,
+-- dá `ERROR: date/time field value out of range`. Uma única dessas em 73
+-- milhões de linhas matava uma carga de 20 horas na fase de transform, de
+-- madrugada, sem ninguém para reagir.
+--
+-- Por que a validação é este CASE feio em vez de um bloco EXCEPTION: EXCEPTION
+-- abre uma subtransação por linha, e 73 milhões de subtransações custam mais
+-- que o problema. E por que as expressões se repetem em vez de saírem num CTE:
+-- o inliner do Postgres recusa corpos com `WITH`, e uma função não inlinada
+-- vira uma chamada por linha, por coluna de data.
+--
+-- Escopo, e é um desvio registrado na spec (S6): só `^\d{8}$` é aceito. Entrada
+-- fora desse formato e das sentinelas — `'2020-01-01'`, `'202001'` — vira NULL
+-- mais um rejeito contado, em vez de passar pela leniência do `to_date`.
 CREATE OR REPLACE FUNCTION analytics.parse_date(s text) RETURNS date
     LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
     SELECT CASE
         WHEN s IS NULL OR btrim(s) IN ('', '0', '00000000') THEN NULL
+        WHEN s !~ '^[0-9]{8}$'                              THEN NULL
+        WHEN substr(s, 1, 4) = '0000'                       THEN NULL   -- ano 0 não existe
+        WHEN substr(s, 5, 2)::integer NOT BETWEEN 1 AND 12  THEN NULL
+        WHEN substr(s, 7, 2)::integer < 1                   THEN NULL
+        WHEN substr(s, 7, 2)::integer > CASE substr(s, 5, 2)::integer
+                 WHEN 2 THEN CASE WHEN (substr(s, 1, 4)::integer % 4 = 0
+                                        AND substr(s, 1, 4)::integer % 100 <> 0)
+                                       OR substr(s, 1, 4)::integer % 400 = 0
+                                  THEN 29 ELSE 28 END
+                 WHEN 4 THEN 30 WHEN 6 THEN 30 WHEN 9 THEN 30 WHEN 11 THEN 30
+                 ELSE 31 END                                THEN NULL
         ELSE to_date(s, 'YYYYMMDD')
     END;
 $$;

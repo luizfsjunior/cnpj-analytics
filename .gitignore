@@ -14,3 +14,4 @@ watcher/__pycache__/
 # pytest
 .pytest_cache/
 watcher/tests/__pycache__/
+analytics/tests/__pycache__/
