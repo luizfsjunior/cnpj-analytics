@@ -16,8 +16,10 @@ services:
     # ele não pode sair do load.sh (que só faz reload). No compose ele sobrevive
     # à recriação do container e fica versionado junto do resto.
     #
-    # ⚠️ Trocar este valor RECRIA o container no próximo deploy. Só faça isso com
-    # a carga parada — no meio de uma carga de horas, o restart a derruba.
+    # ⚠️ Este valor NÃO é aplicado pelo deploy: o workflow sobe o postgres com
+    # `--no-recreate` de propósito, para nunca derrubar o banco. Para valer, o
+    # container precisa ser recriado À MÃO, numa janela sem carga:
+    #   docker compose -p cnpj-analytics up -d postgres-cnpj-rfb
     #
     # No servidor este 1 GB sai do mesmo teto de 3 GB do orçamento da carga: é o
     # que a tabela da seção 7.3 da spec chama de "sobra para a fase = 2 GB".
@@ -71,9 +73,24 @@ services:
       CNPJ_STATE_FILE: /state/state.json
       CHECK_INTERVAL_H: "24"
       LOAD_AFTER_HOUR: "22"
-      # Orçamento de RAM da carga (knobs calculados a partir daqui). O default
-      # 6 é o do servidor; uma máquina com mais RAM sobrescreve pelo .env.
-      TUNE_RAM_GB: "${TUNE_RAM_GB:-6}"
+      # Orçamento da carga. O Compose só repassa ao container as variáveis
+      # listadas AQUI — pôr `ORCAMENTO_RAM_MB` no .env do servidor não basta se
+      # ela não aparecer nesta lista. O default 3072 é o teto da seção 7.3 da
+      # spec: o host é compartilhado (8 vCPU e 16 GB com Airflow, Kong e
+      # Traefik) e NÃO tem swap, então passar do teto é OOM kill, não lentidão.
+      ORCAMENTO_RAM_MB: "${ORCAMENTO_RAM_MB:-3072}"
+      ORCAMENTO_VCPU: "${ORCAMENTO_VCPU:-4}"
+      # Vazias por padrão: a Fase 0 as deriva do host. Só defina no .env para
+      # forçar um valor — e lembre que a Fase 0 ainda pode degradá-las se o
+      # host estiver ocupado, que é o comportamento desejado.
+      LOAD_JOBS: "${LOAD_JOBS:-}"
+      IDX_JOBS: "${IDX_JOBS:-}"
+      CARGA_TRANSFORM: "${CARGA_TRANSFORM:-blocos}"
+      REJEITO_LIMIAR_PCT: "${REJEITO_LIMIAR_PCT:-0.1}"
+      CONTAR_DUP_SOCIO: "${CONTAR_DUP_SOCIO:-0}"
+      # Nome antigo do orçamento, em GB. Continua funcionando para instalações
+      # que já o tinham; `ORCAMENTO_RAM_MB` tem prioridade quando os dois vêm.
+      TUNE_RAM_GB: "${TUNE_RAM_GB:-}"
       # Teto de duração de uma carga completa. 72h porque no servidor a carga
       # cheia (~122M estabelecimentos) já passou de 20h, o default do load.sh.
       LOAD_TIMEOUT_H: "${LOAD_TIMEOUT_H:-72}"
