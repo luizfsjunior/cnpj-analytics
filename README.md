@@ -90,11 +90,19 @@ medições que o justificam em
 | **4 — índices** | **Recria** os índices a partir do que a Fase 2 salvou, `IDX_JOBS` em paralelo. A duplicata do mês é descoberta pelo próprio `CREATE UNIQUE INDEX` ao falhar — sem varredura preventiva. | `fase4_indices.sql` |
 | **5 — o resto** | IBGE, regime tributário, materialized views. | `ibge_transform.sql`, `regime_transform.sql`, `05_materialized_views.sql` |
 
+**Quanto leva.** Carga completa medida na máquina de desenvolvimento, com o
+orçamento do servidor (3 GB, 3 blocos): **3h38** num banco novo, e projetada em
+**~2h50** na carga mensal, em que os índices já existem e a Fase 4 os reconstrói
+em paralelo. Contra 20h+ do servidor hoje. Os números por fase e as ressalvas
+(hardware diferente, o que transfere e o que não transfere) estão na seção 6 da
+[`spec-carga.md`](analytics/spec-carga.md).
+
 **Por que dropar os índices é a mudança que importa.** Das ~20 horas da carga
 antiga, **16 estavam na manutenção de índice de uma tabela só**: 14 GB de índice
 mantidos vivos durante o `INSERT`, através de um `shared_buffers` de 128 MB, com
 o `INSERT` parado em `DataFileRead`. Construir no fim é ordens de magnitude mais
-barato. Os blocos paralelos da Fase 3 valem 2,5× medidos, mas são a parte
+barato — a Fase 2 leva **1 segundo** e o ciclo inteiro de índices cabe em **32
+minutos** na carga mensal (medido sobre a base completa; spec 6.4). Os blocos paralelos da Fase 3 valem 2,5× medidos, mas são a parte
 **menor** do ganho — se um mês der problema com eles, `CARGA_TRANSFORM=sequencial`
 volta ao caminho conhecido sem desfazer o resto.
 

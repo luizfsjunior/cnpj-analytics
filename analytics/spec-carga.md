@@ -699,9 +699,14 @@ final se faz lá, não aqui.
 ## 6.2 A carga completa de ensaio — 16/09/2026
 
 Carga completa da v2 sobre o dump de 2026-06, na máquina de desenvolvimento, com
-o **orçamento do servidor** (`ORCAMENTO_RAM_MB=3072`, `ORCAMENTO_VCPU=4`) para
-que os números sejam comparáveis. Derivados pela Fase 0: `LOAD_JOBS=3`,
-`work_mem=204MB`, `maintenance_work_mem=341MB`.
+o **orçamento do servidor** (`ORCAMENTO_RAM_MB=3072`) para que os números sejam
+comparáveis. Derivados pela Fase 0: `LOAD_JOBS=3`, `work_mem=204MB`,
+`maintenance_work_mem=341MB`.
+
+> ⚠️ **Estes tempos são da versão ANTERIOR à otimização da 6.3.** Esta carga
+> rodou com a varredura preventiva de duplicata (os 51 min) e com o contador de
+> `socio` sempre ligado. Os tempos de COPY e de transform valem; os da Fase 4
+> não descrevem mais o código. A carga com a versão final está na 6.5.
 
 | fase | tempo |
 |---|---|
@@ -843,6 +848,45 @@ Quem for otimizar a próxima rodada deve olhar para a Fase 3, não para os índi
 — e o alvo mais provável é o que a 2.9 já mediu: `estabelecimento` e
 `estabelecimento_cnae_secundario` saem da mesma staging e hoje disparam juntos,
 mas o ganho de 22% foi medido em outro contexto e não foi reconferido aqui.
+
+---
+
+## 6.5 A carga completa com a versão FINAL — 3h38
+
+A 6.2 mediu o código de antes da otimização da 6.3. Esta é a carga completa com
+o que está no repositório, mesmo dump de 2026-06 e mesmo orçamento
+(`ORCAMENTO_RAM_MB=3072`, `LOAD_JOBS=3`, `work_mem=204MB`).
+
+| fase | 6.2 (pré-otimização) | **final** |
+|---|---|---|
+| COPY (total) | 45m06s | 43m29s |
+| Fase 2 — drop dos índices | < 1 s | 1 s |
+| Fase 3 — transform | 2h36m58s | **1h50m33s** |
+| **Fase 4 — pré-índices** | **51m19s** | **58 s** |
+| Fase 4 — reconstrução paralela | 23m19s | 11m38s |
+| `04_indexes.sql` (banco novo; ver 6.4) | 44m14s | 45m31s |
+| resto (IBGE, regime, matviews) | 4m47s | 5m17s |
+| **TOTAL** | **5h26m26s** | **3h38m04s** |
+
+**A otimização da 6.3 entregou o previsto: 51m19s → 58 segundos.** A varredura
+que procurava 23 linhas saiu do caminho, e quem descobre a duplicata passou a ser
+o próprio `CREATE UNIQUE INDEX`.
+
+> ⚠️ **O transform não ficou 46 min mais rápido por mérito do código.** Nada
+> mudou na Fase 3 entre as duas cargas: a diferença é condição de máquina (cache
+> de disco, o que mais rodava). Serve como ordem de grandeza, não como ganho
+> atribuível — e é o tipo de número que, lido sem esta ressalva, viraria uma
+> conquista imaginária na próxima vez que alguém abrir este documento.
+
+Equivalência conferida de novo, e de novo **idêntica**: as 7 tabelas, 339 milhões
+de linhas, mesmo `sum(hashtext(linha))` do `cnpj_bench` — o banco carregado pelo
+caminho antigo. Desfecho `sucesso`, zero rejeito, e os mesmos contadores de
+sempre (1 duplicata em `empresa`).
+
+E o `04_indexes.sql` de 45m31s continua sendo o **pior caso**, de banco novo. Na
+carga mensal ele não tem o que fazer: os 212 índices já existem, a Fase 2 os
+salva e a Fase 4 os reconstrói em paralelo — os 32 min medidos na 6.4. A carga
+mensal projetada fica em **~2h50**.
 
 ---
 
