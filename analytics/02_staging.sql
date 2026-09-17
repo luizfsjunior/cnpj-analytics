@@ -2,12 +2,17 @@
 -- 02_staging.sql — tabelas de staging (tudo TEXT, sem constraints)
 -- Espelham 1:1 os layouts dos CSVs da Receita. Populadas por COPY bruto
 -- (ver load.sh) e convertidas em 03_transform.sql.
+--
+-- UNLOGGED (spec-carga.md, Fase 1): são 27 GB de dado descartável, e escrevê-lo
+-- no WAL é trabalho puro. O risco é nulo — se o servidor cair no meio, a carga
+-- recomeça do zip de qualquer forma. O que se perde é a réplica poder ler a
+-- staging, e ninguém lê a staging.
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS staging;
 
 DROP TABLE IF EXISTS staging.empresas;
-CREATE TABLE staging.empresas (           -- Empresas*.csv (7 colunas)
+CREATE UNLOGGED TABLE staging.empresas (           -- Empresas*.csv (7 colunas)
     cnpj_basico              text,
     razao_social             text,
     natureza_juridica        text,
@@ -18,7 +23,7 @@ CREATE TABLE staging.empresas (           -- Empresas*.csv (7 colunas)
 );
 
 DROP TABLE IF EXISTS staging.estabelecimentos;
-CREATE TABLE staging.estabelecimentos (   -- Estabelecimentos*.csv (30 colunas)
+CREATE UNLOGGED TABLE staging.estabelecimentos (   -- Estabelecimentos*.csv (30 colunas)
     cnpj_basico              text,
     cnpj_ordem               text,
     cnpj_dv                  text,
@@ -52,7 +57,7 @@ CREATE TABLE staging.estabelecimentos (   -- Estabelecimentos*.csv (30 colunas)
 );
 
 DROP TABLE IF EXISTS staging.socios;
-CREATE TABLE staging.socios (             -- Socios*.csv (11 colunas)
+CREATE UNLOGGED TABLE staging.socios (             -- Socios*.csv (11 colunas)
     cnpj_basico              text,
     identificador_socio      text,
     nome_socio               text,
@@ -67,7 +72,7 @@ CREATE TABLE staging.socios (             -- Socios*.csv (11 colunas)
 );
 
 DROP TABLE IF EXISTS staging.simples;
-CREATE TABLE staging.simples (            -- Simples.csv (7 colunas)
+CREATE UNLOGGED TABLE staging.simples (            -- Simples.csv (7 colunas)
     cnpj_basico              text,
     opcao_simples            text,        -- S / N
     data_opcao_simples       text,

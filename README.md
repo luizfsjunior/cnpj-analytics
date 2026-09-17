@@ -18,8 +18,17 @@ cmd/api/          entrypoint do servidor
 internal/db/      pool de conexão pgx
 internal/api/     servidor, rotas e handlers
 analytics/        DDL + ETL do schema (SQL puro + load.sh)
+  00_carga.sql      schema `carga`: auditoria do rejeito e casts totais
+  01_schema.sql     tabelas, partições e parse_date
+  02_staging.sql    staging UNLOGGED, espelho dos CSVs
+  03_transform.sql  transform sequencial (referência de conteúdo)
+  03_transform_v2.sql  transform em blocos paralelos (o que a carga usa)
+  fase2_drop_indices.sql / fase4_indices.sql   o ciclo de índices
+  recuperar_indices.sh  rede do trap: recria os índices numa falha
+  spec-carga.md     o CONTRATO da carga (leia antes de mexer)
 watcher/          watcher.py — baixa os zips do mês e dispara a carga
 watcher/tests/    testes do watcher (pytest + responses, sem rede)
+analytics/tests/  testes do load.sh (stubs de shell) e dos .sql
 .github/workflows/ deploy.yml — CI/CD no runner self-hosted (ver "Deploy")
 ```
 
@@ -64,6 +73,110 @@ go run ./cmd/api          # ou: docker compose up --build api
 > `IBGE_CACHE_MAX_DAYS` dias, então uma queda de rede não impede a carga. Detalhes e
 > regras de casamento: [`analytics/fontes-dados.md`](analytics/fontes-dados.md).
 
+### Como a carga funciona (as seis fases)
+
+O `load.sh` é o orquestrador; o trabalho de verdade está nos `.sql`. O contrato
+de tudo isto — o que tem de ser verdade no fim, o que é proibido e como se prova
+cada ponto — está em [`analytics/spec-carga.md`](analytics/spec-carga.md), e as
+medições que o justificam em
+[`analytics/redesenho-carga.md`](analytics/redesenho-carga.md).
+
+| Fase | O que faz | Arquivos |
+|---|---|---|
+| **0 — pré-voo** | Confere o **layout** dos CSVs (número de colunas) antes de qualquer COPY, lê CPU/memória/disco e **deriva** `LOAD_JOBS`, `work_mem` e `maintenance_work_mem`. Host ocupado → degrada e segue. | `load.sh` |
+| **1 — COPY** | `unzip -p \| tr -d '\000' \| \copy` direto para a staging, que é **`UNLOGGED`**. | `02_staging.sql` |
+| **2 — drop de índices** | Salva a DDL dos 212 índices em `carga.indice_salvo` e os **dropa**. Mantém só a PK de `empresa`. | `fase2_drop_indices.sql` |
+| **3 — transform** | staging → `analytics`, com sanitização nomeada e rejeito contado. Em **blocos paralelos** por faixa de `ctid`. | `03_transform_v2.sql` (ou `03_transform.sql`) |
+| **4 — índices** | **Recria** os índices a partir do que a Fase 2 salvou, `IDX_JOBS` em paralelo. A duplicata do mês é descoberta pelo próprio `CREATE UNIQUE INDEX` ao falhar — sem varredura preventiva. | `fase4_indices.sql` |
+| **5 — o resto** | IBGE, regime tributário, materialized views. | `ibge_transform.sql`, `regime_transform.sql`, `05_materialized_views.sql` |
+
+**Por que dropar os índices é a mudança que importa.** Das ~20 horas da carga
+antiga, **16 estavam na manutenção de índice de uma tabela só**: 14 GB de índice
+mantidos vivos durante o `INSERT`, através de um `shared_buffers` de 128 MB, com
+o `INSERT` parado em `DataFileRead`. Construir no fim é ordens de magnitude mais
+barato. Os blocos paralelos da Fase 3 valem 2,5× medidos, mas são a parte
+**menor** do ganho — se um mês der problema com eles, `CARGA_TRANSFORM=sequencial`
+volta ao caminho conhecido sem desfazer o resto.
+
+**A janela perigosa, e a rede que existe por causa dela.** Entre as Fases 2 e 4 a
+base fica **sem índice**. Se a carga morrer aí, a API responderia com seq scan em
+73 milhões de linhas até alguém agir — e o watcher só retenta em 24 h. Por isso
+o `trap EXIT` do `load.sh` chama
+[`analytics/recuperar_indices.sh`](analytics/recuperar_indices.sh) antes de
+propagar qualquer erro. O script é idempotente e pode ser rodado na mão:
+
+```bash
+DB=cnpj_full bash analytics/recuperar_indices.sh
+```
+
+**Nada derruba a carga por causa de uma célula.** Todo cast é *total*: um
+`'20200231'` (data que não existe), um `'1.234,56'` no capital ou um `cnpj_ordem`
+com 5 dígitos viram `NULL` mais um rejeito contado, em vez da exceção que antes
+matava 20 horas de trabalho às 3 da manhã. A validação é por regex e faixa,
+**nunca** por bloco `EXCEPTION` — que abriria uma subtransação por linha em 73
+milhões de linhas.
+
+### O schema `carga` — onde a carga registra o que fez
+
+A API não enxerga este schema e nada em `analytics` depende dele; se alguém o
+dropar, a carga continua correta e só se perde a auditoria. Ele existe porque
+`analytics` tem de ficar **idêntico** ao que os `.sql` produzem (é o teste T1),
+então não cabe nenhuma tabela de controle lá dentro.
+
+| Tabela | O que guarda |
+|---|---|
+| `carga.rejeito` | Toda linha/célula descartada, com a **regra** que a pegou (S4, S5, S6, S9, S11, S12) e a linha bruta. |
+| `carga.contador` | Um contador por regra e tabela, em toda carga — inclusive das regras que não descartam nada. |
+| `carga.duplicata` | Chaves naturais repetidas no mês (a quarentena). |
+| `carga.indice_salvo` | A DDL dos índices, salva pela Fase 2. É a **única** cópia. |
+| `carga.resumo` | Uma linha por execução: início, fim, parâmetros derivados, recursos do host, pico de memória e `desfecho`. |
+
+```sql
+-- o que este mês descartou, por regra
+SELECT * FROM carga.resumo_regras WHERE competencia = '2026-09';
+-- e o que essas linhas eram
+SELECT * FROM carga.rejeito WHERE competencia = '2026-09' LIMIT 50;
+```
+
+**Como a duplicata é descoberta sem custo.** A Fase 4 não varre a fonte para
+decidir se cria o índice único: ela **tenta** criar. O `CREATE UNIQUE INDEX` já
+percorre a tabela inteira para construir o índice, então a verificação de
+unicidade sai de graça no mesmo passe. Só quando ele falha é que a varredura
+acontece, para montar a quarentena. O desenho anterior varria antes, e isso
+custou **51 minutos por carga** na medição de 16/09/2026 — para encontrar 23
+linhas.
+
+**`desfecho` tem três estados, e o terceiro é o que evita retrabalho.** Um mês em
+que a Receita publique chave natural repetida termina em **`degradado`**, não em
+`falha`: o índice afetado sai **não-único**, as chaves vão para
+`carga.duplicata`, e a carga termina com sucesso. Não é motivo para recarregar —
+a carga seguinte volta ao índice único sozinha se o mês vier limpo. (É o único
+ponto em que a estrutura pode divergir do `01_schema.sql`, e é desvio conhecido e
+temporário.)
+
+### Gotchas da carga (economizam horas)
+
+**Não edite o `load.sh` enquanto uma carga roda.** O bash não carrega o script
+inteiro na memória — lê do disco conforme executa. Editar o arquivo em execução
+desloca os offsets e o parser quebra no meio (`unexpected EOF while looking for
+matching`), derrubando a carga depois de horas de COPY. Vale para o `watcher`
+também: durante a janela de carga (a partir das `LOAD_AFTER_HOUR`), mexer no
+arquivo derruba a carga do mês. Edite uma cópia e troque depois.
+
+**`rg` precisa ser o binário do ripgrep, não uma função/alias do shell.** O modo
+`SAMPLE` usa `rg` para casar os CNPJs básicos nos zips de empresas/sócios;
+funções de shell não passam para subprocessos. Desde a correção o script checa
+as dependências antes de começar (`check_deps`) e aborta na hora em vez de
+produzir uma amostra vazia reportando sucesso. A carga completa não usa `rg`.
+
+**`Estabelecimentos0.zip` é ~6x maior que os outros.** Ele descomprime para
+~6,5 GB contra ~1,0 GB de cada um dos nove seguintes, e sozinho responde por ~29
+dos ~72 milhões de estabelecimentos. Na carga de referência levou 8m50s contra
+~1m22s dos demais — proporcional ao tamanho, não anomalia. Isso importa ao
+paralelizar: dividir os COPYs em 10 tarefas iguais deixaria uma 6x mais longa
+que as outras, e o tempo total seria o dela. O COPY roda a ~12 MB/s de CSV
+descomprimido, de forma estável.
+
 ### Variáveis do `load.sh`
 
 | Var | Default | Efeito |
@@ -72,16 +185,26 @@ go run ./cmd/api          # ou: docker compose up --build api
 | `DB` | `cnpj` | Banco de destino. Ex.: `DB=cnpj_full bash analytics/load.sh` carrega num banco separado sem tocar na amostra. |
 | `DATA_DIR` | `./data` | Pasta dos zips (cai para `../minha-receita/data` se necessário). |
 | `TUNE` | `1` | Aplica tuning de carga (reload-only). `TUNE=0` desliga. **`shared_buffers` exige restart** — defina-o antes (ver [`tuning-carga.md`](analytics/tuning-carga.md)). |
-| `TUNE_RAM_GB` | `6` | Orçamento de RAM para o tuning. Todos os knobs (`maintenance_work_mem`, `work_mem`, `max_wal_size`) são calculados proporcionalmente. Pico durante índices ≈ 60% deste valor (~3.6 GB). |
+| `ORCAMENTO_RAM_MB` | `3072` | Teto de RAM da carga. **Tudo** (`work_mem`, `maintenance_work_mem`, `max_wal_size`) é derivado daqui na Fase 0. |
+| `ORCAMENTO_VCPU` | `min(4, nproc)` | vCPU que a carga pode ocupar. Um core sempre fica de fora, para o `unzip`/`tr` e para quem mais dividir o host. |
+| `LOAD_JOBS` | derivado (teto **3**) | Blocos simultâneos na Fase 3. Se o host estiver ocupado, a Fase 0 **degrada** este número e segue — nunca aborta. |
+| `IDX_JOBS` | `= LOAD_JOBS` | Índices construídos ao mesmo tempo na Fase 4. |
+| `CARGA_TRANSFORM` | `blocos` | `sequencial` volta ao `03_transform.sql` (uma tabela por vez). É a válvula de escape se os blocos derem problema num mês. |
+| `REJEITO_LIMIAR_PCT` | `0.1` | Acima disto a carga **avisa** que rejeitou muito. Nunca aborta por isso. |
+| `CONTAR_DUP_SOCIO` | `0` | Conta duplicatas idênticas em `socio`. **Desligado por padrão**: é um `GROUP BY` de 11 colunas sobre 27,8M linhas e não alimenta nenhuma decisão da carga — só o contador que confirma a hipótese do conjunto congelado (spec 5.2). |
+| `COMPETENCIA` | mês corrente | Rótulo do mês em `carga.resumo`/`carga.rejeito`. |
+| `TUNE_RAM_GB` | — | Nome antigo do orçamento, em GB. Se definido, vira `ORCAMENTO_RAM_MB`; continua valendo em `.env` já existentes. |
 | `IBGE_ONLY` | `0` | Se `1`, roda **só** o de-para IBGE (`dim_municipio.codigo_ibge`/`uf`) numa base já carregada e sai. Não aplica tuning, não recria schema, não recarrega zip nenhum. |
 | `IBGE_REFRESH` | `0` | Se `1`, rebaixa `tabmun.csv`/`ibge_municipios.json` mesmo com cache válido. |
 | `IBGE_CACHE_MAX_DAYS` | `25` | Idade máxima do cache das fontes do IBGE. Vencido, rebaixa; se o download falhar, segue com o cache. |
 | `IBGE_CACHE_DIR` | `$DATA_DIR` | Onde ficam `tabmun.csv` e `ibge_municipios.json`. |
 | `KEEP_STAGING` | `0` | Por padrão dropa o schema `staging` ao terminar (libera ~27GB na carga completa). `KEEP_STAGING=1` preserva para debug. |
+| `TIMING` | `1` | Imprime o tempo de cada fase da carga (COPY por zip, transform, índices…) e um resumo no fim — inclusive se a carga abortar no meio. `TIMING=0` volta à saída original. |
+| `SQL_TIMING` | `1` | Prefixa `	iming on` nos arquivos SQL, então o psql imprime a duração de **cada statement** (é assim que se identifica qual índice do `04_indexes.sql` domina o tempo). Ignorado com `TIMING=0`. |
 
 > **Gotcha — `/dev/shm` do postgres:** o serviço `postgres-cnpj-rfb` no `docker-compose.yml` define
 > `shm_size: "512m"`. O default do Docker (64MB) é pequeno demais para os *parallel workers*
-> e faz a carga falhar ao criar as materialized views (passo [5/5]) com
+> e faz a carga falhar ao criar as materialized views (passo [6/6]) com
 > `could not resize shared memory segment ... No space left on device`. `shm_size` só é
 > aplicado ao **criar** o container — após alterar, rode `docker compose up -d postgres`
 > (um `restart` não pega).
@@ -105,7 +228,7 @@ comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo
 | `CNPJ_DATA_DIR` | `/data` | `DATA_DIR` do `load.sh` (onde estão os zips; é um volume). |
 | `CHECK_INTERVAL_H` | `24` | Intervalo entre verificações do share. |
 | `LOAD_AFTER_HOUR` | `22` | Hora mínima (0–23) para iniciar a carga. |
-| `TUNE_RAM_GB` | `6` | Orçamento de RAM da carga (ver tabela do `load.sh`). |
+| `ORCAMENTO_RAM_MB` | `3072` | Teto de RAM da carga (ver tabela do `load.sh`). `TUNE_RAM_GB` continua funcionando. |
 
 ### Por que o download tem retry (gotcha importante)
 
@@ -155,6 +278,60 @@ stream (com asserção do `Range` da tentativa seguinte), 4xx sem retry, 5xx com
 retry, servidor ignorando o `Range`, 416 com `.part` já completo e a 2ª passada.
 As deps de teste ficam em `watcher/requirements-dev.txt` e **não** entram na imagem:
 o `Dockerfile` copia só o `requirements.txt`.
+
+### Testes do `load.sh` e dos `.sql`
+
+`pytest`, em `analytics/tests/` — separados dos testes do watcher porque exercitam
+shell e SQL, não Python:
+
+```bash
+python -m pytest analytics/tests -q          # tudo (~8 min, precisa do container)
+python -m pytest analytics/tests -q -k "load_sh"      # só os que não precisam de banco
+```
+
+A maior parte deles guarda o **contrato da carga**, definido em
+[`analytics/spec-carga.md`](analytics/spec-carga.md). Se você quebrar um, leia a
+spec antes de "consertar o teste" — cada um corresponde a um requisito:
+
+| arquivo | o que guarda |
+|---|---|
+| `test_t1_schema_invariante.py` | **R1**: a estrutura de `analytics` não muda. Inclui a prova de que dropar e recriar índices **pelo pai** reproduz os nomes das 28 partições. |
+| `test_t2_equivalencia.py` | O conteúdo produzido bate com `golden_carga_atual.json`. Regravar o golden sem registrar exceção nomeada na spec é mudar o contrato em silêncio. |
+| `test_t3_sanitizacao.py` | As regras S1–S12, uma a uma, com o caso que dispara e o que não. |
+| `test_t4_a_t8_v2.py` | Rejeito contabilizado (T4), recuperação pelo trap (T5), orçamento (T6/T7/T12), quarentena de duplicata (T8), determinismo dos blocos (T10/T11), robustez a lixo (T13) e layout (T14). |
+| `test_t9_amostra_coerente.py` | Carga em blocos × sequencial sobre dado REAL da Receita. **Pula** sem os zips; rode com `CNPJ_DATA_DIR=<pasta>`. Obrigatório antes de ir ao servidor. |
+| `fixture_carga.py` | A fixture sintética: cada linha existe para disparar uma regra nomeada. |
+
+* **`test_load_sh_dependencias.py`** e **`test_load_sh_tune_zero.py`** rodam o
+  `load.sh` de verdade com um PATH em que `unzip`, `psql`, `curl` e `rg` são
+  stubs. Nenhum byte da Receita é lido e nenhum banco é tocado: o que se observa
+  é o comportamento do script (o que ele tolera, com que código de saída sai).
+* **`test_regime_transform_idempotente.py`** precisa do container de pé
+  (`docker compose up -d postgres-cnpj-rfb`); cria e dropa um banco descartável.
+  Pula sozinho se o Docker não estiver disponível.
+
+> **Os testes com stub não substituem o T9.** Três bugs que passaram por toda a
+> suíte verde só apareceram com zips de verdade — entre eles um `psql` em
+> background que consumia o stdin do loop de blocos e fazia a carga terminar
+> **com sucesso e quatro tabelas vazias**. Está tudo registrado na seção 6 da
+> spec.
+
+**Gotcha de ambiente (Windows).** Os testes procuram o bash em caminho absoluto,
+e não é capricho:
+
+* `subprocess.run(["bash", ...])` **não** roda o Git Bash — o `CreateProcess`
+  procura em `System32` antes do PATH, e lá mora o `bash.exe` **launcher do
+  WSL**, que não herda o ambiente do processo pai. As variáveis do teste somem, o
+  `load.sh` cai nos defaults (`DB=cnpj`, `docker compose exec` no container real,
+  `DATA_DIR` no fallback `../minha-receita/data`) e o teste vira uma carga de
+  verdade.
+* Mesmo achando o Git Bash, `Git\bin\bash.exe` é um wrapper que antepõe
+  `/usr/bin` ao PATH: aí o `unzip` real vence o stub. O certo é
+  `Git\usr\bin\bash.exe`. Sobrescreva com `BASH_PARA_TESTES=<caminho>` se
+  precisar.
+
+O `conftest.py` verifica as duas coisas em tempo de execução e aborta com
+mensagem explícita em vez de rodar torto.
 
 ### Rodar com Docker (recomendado)
 
@@ -331,6 +508,21 @@ Dois arquivos vivem só no diretório de deploy e estão no `--exclude` do rsync
 > errado de forma intermitente. O sufixo no arquivo base resolve isso de uma vez;
 > tentar resolver só com `aliases` no override não funciona, porque o alias com o
 > nome do serviço continua sendo publicado.
+
+> ⚠️ **O orçamento da carga no servidor tem de ser 3 GB, e isso é do `.env` de
+> lá.** O `.env` de desenvolvimento usa `TUNE_RAM_GB=16`, o que faz sentido numa
+> máquina dedicada. O servidor é **compartilhado** — 8 vCPU e 16 GB com Airflow,
+> Kong e Traefik — e **não tem swap**: passar do teto ali não é lentidão, é OOM
+> kill, e a vítima pode ser o Postgres de outra stack. O `.env` do servidor deve
+> ter:
+>
+> ```
+> ORCAMENTO_RAM_MB=3072
+> ORCAMENTO_VCPU=4
+> ```
+>
+> Se `TUNE_RAM_GB` sobrou lá de uma instalação antiga, ele **manda** sobre o
+> default e vale `TUNE_RAM_GB × 1024` MB — remova-o ao definir `ORCAMENTO_RAM_MB`.
 
 ### Migração (uma vez, do layout antigo)
 

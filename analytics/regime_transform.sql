@@ -13,6 +13,31 @@
 
 \set ON_ERROR_STOP on
 
+-- O `CREATE TABLE IF NOT EXISTS` abaixo não converge uma base criada por uma
+-- versão ANTERIOR deste arquivo: ele vê a tabela, não recria, e o INSERT quebra
+-- em "column cnpj does not exist" — na ÚLTIMA fase de uma carga de horas.
+-- Descartar é seguro: o conteúdo vem sempre da staging (há um TRUNCATE logo
+-- adiante), então uma tabela com layout velho não guarda nada que se perca.
+DO $$
+DECLARE
+    esperado text[] := ARRAY['id', 'cnpj', 'cnpj_basico', 'ano',
+                             'forma_de_tributacao', 'qtd_escrituracoes', 'cnpj_da_scp'];
+    atual    text[];
+BEGIN
+    IF to_regclass('analytics.regime_tributario') IS NULL THEN
+        RETURN;                      -- primeira carga: nada a converger
+    END IF;
+
+    SELECT array_agg(column_name::text ORDER BY ordinal_position) INTO atual
+    FROM information_schema.columns
+    WHERE table_schema = 'analytics' AND table_name = 'regime_tributario';
+
+    IF atual IS DISTINCT FROM esperado THEN
+        RAISE NOTICE 'regime_tributario com layout divergente (%) -> recriando', atual;
+        DROP TABLE analytics.regime_tributario;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS analytics.regime_tributario (
     id                   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     cnpj                 char(14) NOT NULL,        -- CNPJ completo
