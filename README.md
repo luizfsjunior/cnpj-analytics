@@ -529,8 +529,23 @@ Dois arquivos vivem só no diretório de deploy e estão no `--exclude` do rsync
 > ORCAMENTO_VCPU=4
 > ```
 >
-> Se `TUNE_RAM_GB` sobrou lá de uma instalação antiga, ele **manda** sobre o
-> default e vale `TUNE_RAM_GB × 1024` MB — remova-o ao definir `ORCAMENTO_RAM_MB`.
+> Se `TUNE_RAM_GB` sobrou lá de uma instalação antiga, ele vale
+> `TUNE_RAM_GB × 1024` MB quando `ORCAMENTO_RAM_MB` não está definido — remova-o
+> ao adotar o nome novo, para não ficarem dois valores dizendo a mesma coisa.
+>
+> ⚠️ **O `.env` sozinho não basta.** O Compose só repassa ao container do watcher
+> as variáveis listadas no `environment:` do serviço. Se você acrescentar uma
+> variável nova ao `.env` do servidor e ela não estiver lá, o container não a vê.
+>
+> ⚠️ **O `shared_buffers` NÃO entra pelo deploy.** O workflow sobe o postgres com
+> `--no-recreate` e o resto com `--no-deps`, justamente para nunca derrubar o
+> banco (perder uma carga de horas). Então mudar `shared_buffers` no compose não
+> tem efeito até alguém recriar o container **à mão**, numa janela sem carga:
+>
+> ```bash
+> cd /opt/applications/cnpj-analytics/prod
+> docker compose -p cnpj-analytics up -d postgres-cnpj-rfb   # recria: API cai por segundos
+> ```
 
 ### Migração (uma vez, do layout antigo)
 
