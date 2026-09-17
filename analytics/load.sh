@@ -441,13 +441,29 @@ checar_layout() {
         shopt -u nullglob
         [ ${#arquivos[@]} -gt 0 ] || continue
         z="${arquivos[0]}"
+
+        # Arquivo AUSENTE não é layout mudado, e a diferença importa para quem
+        # lê o erro às 3 da manhã. O glob (`Empresas*.zip`) simplesmente não
+        # casa e o `continue` acima já cuidou; mas um nome literal como
+        # `Simples.zip` sobrevive ao `nullglob` mesmo sem existir, e caía aqui
+        # como "0 colunas" — mandando procurar mudança de layout quando o que
+        # houve foi um download incompleto. Trata igual aos outros: avisa e
+        # segue, deixando o COPY reclamar de quem falta.
+        if [ ! -r "$z" ]; then
+            echo "!! $(basename "$z") não encontrado em $DATA_DIR — pulando a conferência de layout de staging.$nome" >&2
+            continue
+        fi
+
         # Só dígitos: qualquer ruído que escape do pipe acima viraria um
         # "integer expected" no teste abaixo, e a conferência de layout não pode
         # ser a causa de uma falha de layout.
         achado="$(colunas_do_zip "$z")"
         achado="${achado//[^0-9]/}"
         [ -n "$achado" ] || achado=0
-        if [ "$achado" -ne "$esperado" ]; then
+        if [ "$achado" -eq 0 ]; then
+            echo "!! não foi possível ler a primeira linha de $(basename "$z") — arquivo corrompido ou truncado?" >&2
+            falhou=1
+        elif [ "$achado" -ne "$esperado" ]; then
             echo "!! layout de $(basename "$z"): $achado colunas, esperado $esperado (staging.$nome)" >&2
             falhou=1
         fi
