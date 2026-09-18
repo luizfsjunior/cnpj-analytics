@@ -1,0 +1,7 @@
+{
+  "cnpj_carga": {
+    "slots": 1,
+    "description": "Carga mensal do CNPJ. UM slot, e nao e folga: duas cargas concorrentes disputam o schema staging, o carga.indice_salvo (unica copia da DDL dos 212 indices) e o orcamento de RAM de um host sem swap, onde estourar o teto e OOM kill. Ver airflow/spec-dag-carga.md, R1.",
+    "include_deferred": false
+  }
+}
