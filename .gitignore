@@ -6,12 +6,13 @@
 # watcher: estado e log são locais, não versionados
 watcher/state.json
 watcher/watcher.log
-watcher/__pycache__/
 
 # IDE
 /.idea/
 
 # pytest
 .pytest_cache/
-watcher/tests/__pycache__/
-analytics/tests/__pycache__/
+
+# bytecode, em qualquer pasta (antes era listado um a um, e a pasta nova de
+# testes da DAG passava direto)
+__pycache__/

@@ -1,0 +1,8 @@
+# Deps de teste da DAG. NÃO entram em imagem nenhuma.
+pytest>=8.0
+PyYAML>=6.0
+
+# Só para os testes que precisam do objeto DAG (T1, T6, T9) e para o T10.
+# Pesado; os demais testes rodam sem ele e pulam esses com motivo explícito.
+apache-airflow>=2.9
+apache-airflow-providers-docker>=3.12

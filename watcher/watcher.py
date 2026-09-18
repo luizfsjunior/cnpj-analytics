@@ -40,7 +40,6 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
-import schedule
 import time
 
 # ---------------------------------------------------------------------------
@@ -83,16 +82,38 @@ RETRY_BACKOFF = (0, 2, 5, 15, 30, 30, 60)
 # antigo 120s e ainda deixa folga larga para gaps entre chunks num zip de 2 GB.
 DOWNLOAD_TIMEOUT = (30, 60)
 
+def _handlers() -> list[logging.Handler]:
+    """Saída de log: sempre o stdout; o arquivo, só se der.
+
+    O arquivo é *melhor esforço* de propósito. Este módulo também é usado como
+    BIBLIOTECA — a DAG do Airflow importa `fetch_available_months` e
+    `download_month` — e ali o repo está montado somente leitura. Abrir um
+    `FileHandler` como efeito colateral do import fazia o import inteiro morrer
+    com `OSError: [Errno 30] Read-only file system`, derrubando uma task por
+    causa de um log que ninguém lê quando quem executa é o Airflow (que já
+    captura o stdout).
+
+    `CNPJ_WATCHER_LOG` aponta o arquivo para outro lugar; vazio desliga.
+    """
+    saida: list[logging.Handler] = [
+        logging.StreamHandler(
+            stream=open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)
+        )
+    ]
+    destino = os.getenv("CNPJ_WATCHER_LOG", str(Path(__file__).parent / "watcher.log"))
+    if destino:
+        try:
+            saida.append(logging.FileHandler(destino, encoding="utf-8"))
+        except OSError:
+            pass
+    return saida
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(
-            stream=open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False)
-        ),
-        logging.FileHandler(Path(__file__).parent / "watcher.log", encoding="utf-8"),
-    ],
+    handlers=_handlers(),
 )
 log = logging.getLogger(__name__)
 
@@ -474,6 +495,13 @@ def check_and_load() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # `schedule` é importado AQUI, e não no topo, porque é dependência só do
+    # loop do daemon. A DAG do Airflow usa este arquivo como BIBLIOTECA —
+    # importa `fetch_available_months` e `download_month` e nunca chama `main`
+    # — e um import no topo obrigaria o ambiente do Airflow a instalar uma
+    # biblioteca de agendamento para poder listar os meses do share.
+    import schedule
+
     if "--check" in sys.argv:
         log.info("Modo --check: verificação única.")
         check_and_load()

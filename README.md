@@ -28,6 +28,11 @@ analytics/        DDL + ETL do schema (SQL puro + load.sh)
   spec-carga.md     o CONTRATO da carga (leia antes de mexer)
 watcher/          watcher.py — baixa os zips do mês e dispara a carga
 watcher/tests/    testes do watcher (pytest + responses, sem rede)
+airflow/          a DAG que vai SUBSTITUIR o watcher (ver "Orquestração no Airflow")
+  spec-dag-carga.md  o CONTRATO da DAG
+  dags/cnpj_carga.py a DAG
+  pools.json         o pool de 1 slot que impede carga dupla
+  tests/             T1–T10 da spec da DAG
 analytics/tests/  testes do load.sh (stubs de shell) e dos .sql
 .github/workflows/ deploy.yml — CI/CD no runner self-hosted (ver "Deploy")
 ```
@@ -237,6 +242,15 @@ comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo
 | `CHECK_INTERVAL_H` | `24` | Intervalo entre verificações do share. |
 | `LOAD_AFTER_HOUR` | `22` | Hora mínima (0–23) para iniciar a carga. |
 | `ORCAMENTO_RAM_MB` | `3072` | Teto de RAM da carga (ver tabela do `load.sh`). `TUNE_RAM_GB` continua funcionando. |
+| `CNPJ_WATCHER_LOG` | `watcher/watcher.log` | Arquivo de log. Vazio **desliga** o arquivo; o stdout continua sempre. |
+
+> **O `watcher.py` também é usado como biblioteca.** A DAG do Airflow importa
+> `fetch_available_months` e `download_month` dele — o retry contra o share não
+> é reimplementado em lugar nenhum. Por isso importar o módulo não pode ter
+> efeito colateral: o `import schedule` mora dentro de `main()` (é dependência
+> só do loop do daemon) e o arquivo de log é **melhor esforço** — com o repo
+> montado somente leitura, abrir o `FileHandler` derrubava o import inteiro com
+> `OSError: [Errno 30] Read-only file system`.
 
 ### Por que o download tem retry (gotcha importante)
 
@@ -385,6 +399,55 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cnpj-watcher
 journalctl -u cnpj-watcher -f
 ```
+
+## Orquestração no Airflow (em migração)
+
+O `watcher.py` é, no fundo, um scheduler artesanal: `CHECK_INTERVAL_H`,
+`LOAD_AFTER_HOUR`, estado num volume nomeado, timeout próprio. Como o servidor
+já roda Airflow na mesma máquina e na mesma `services-net`, isso está migrando
+para uma DAG. O contrato está em
+[`airflow/spec-dag-carga.md`](airflow/spec-dag-carga.md).
+
+```
+detectar_mes ──▶ baixar_zips ──▶ carregar ──▶ conferir_desfecho
+      │                                            │
+      └─(sem mês novo: pula)                       │
+                                                   ▼
+                                    recuperar_indices  (all_done)
+```
+
+A DAG **chama**; não reescreve. O retry do download continua no `watcher.py`, as
+seis fases continuam no `load.sh`, e as regras de sanitização continuam no
+transform.
+
+| item | onde |
+|---|---|
+| a DAG | `airflow/dags/cnpj_carga.py` (um módulo só: decisões puras no topo, operators embaixo) |
+| o pool de 1 slot | `airflow/pools.json` — `airflow pools import` |
+| os testes | `airflow/tests/` — precisam do Airflow no mesmo interpretador do pytest |
+
+Quatro coisas que valem saber antes de mexer:
+
+- **`degradado` é sucesso.** A run lê `carga.resumo`, não o código de saída do
+  container: um mês com chave natural repetida termina em `degradado` e **não**
+  é motivo para recarregar. Decidir pelo exit code agendaria um retry de 4 horas
+  todo mês em que a Receita publicar duplicata.
+- **A carga roda em container próprio**, não dentro do worker. Reiniciar o
+  Airflow no meio de uma carga de 4h não pode matá-la — matá-la entre as Fases 2
+  e 4 deixa a base sem índice.
+- **`retries=0` na carga**, de propósito (ver `spec-dag-carga.md`, R8).
+- **O repo tem de estar montado em `CNPJ_REPO_DIR`** dentro do Airflow: é de lá
+  que `detectar_mes` importa o watcher. As outras tasks não precisam — usam a
+  imagem da carga, que já traz o código.
+
+**O watcher ainda está no ar.** O cutover (remover o serviço do compose e do
+`deploy.yml`, e acrescentar o build da imagem `cnpj-carga`) vem depois de a DAG
+rodar o T10 com zips de verdade — por isso os testes T2 estão vermelhos de
+propósito. Enquanto os dois coexistirem, **não ligue a DAG**: seriam dois
+disparadores independentes da mesma carga.
+
+Para desenvolver, há um Airflow local em `../airflow-local` (3.3.0, a versão do
+servidor), que monta `airflow/dags` deste repo.
 
 ## Endpoints
 
