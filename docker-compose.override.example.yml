@@ -5,7 +5,7 @@
 # CI/CD o preserva via --exclude. Este exemplo existe para que a configuração
 # não viva só na cabeça de quem tem SSH.
 #
-# O que ele faz: liga os três serviços à rede externa compartilhada
+# O que ele faz: liga os dois serviços à rede externa compartilhada
 # `services-net`, por onde as outras stacks (Airflow, Protheus, controladoria)
 # enxergam este banco. Não precisa de `aliases`: o Compose já publica o nome do
 # serviço como alias de DNS, e os nomes do compose base já têm o sufixo
@@ -13,6 +13,14 @@
 # conectam em `postgres-cnpj-rfb:5432`.
 #
 # Uso: copie para docker-compose.override.yml no diretório de deploy.
+#
+# ATENÇÃO ao mexer aqui de novo: um bloco de serviço que só define `networks:`
+# para um serviço que NÃO existe na base (`docker-compose.yml`) quebra o
+# deploy inteiro — o Compose funde o override sozinho e cria um serviço sem
+# `image`/`build`, erro "has neither an image nor a build context specified".
+# Foi o que aconteceu com `watcher-cnpj-rfb` quando o serviço saiu da base em
+# 22/09/2026 (D1) e este bloco ficou esquecido aqui e no arquivo real do
+# servidor — que não é tocado pelo rsync, então corrigir aqui não corrige lá.
 # ============================================================================
 networks:
   services-net:
@@ -25,11 +33,6 @@ services:
       services-net:
 
   api-cnpj-rfb:
-    networks:
-      default:
-      services-net:
-
-  watcher-cnpj-rfb:
     networks:
       default:
       services-net:
