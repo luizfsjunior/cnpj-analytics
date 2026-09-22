@@ -58,7 +58,34 @@ jobs:
             --exclude 'docker-compose.override.yml' \
             "$GITHUB_WORKSPACE/" "$DEPLOY_DIR/"
 
-      - name: Sobe api e watcher (postgres intocado)
+      # A imagem que a DAG do Airflow executa (spec-dag-carga, seção 4 e D4).
+      # NÃO há registry: o runner é self-hosted neste mesmo servidor, então o
+      # build cai no daemon que o Airflow usa — a imagem simplesmente aparece lá.
+      #
+      # Duas tags de propósito. A DAG fixa o SHA no momento do run: um deploy no
+      # meio de uma carga de 4h não troca o código do container em execução, mas
+      # um retry que pegasse `latest` rodaria OUTRO código no meio do mesmo mês.
+      # `latest` existe para o disparo à mão e para o primeiro run, quando
+      # ninguém tem um SHA na ponta da língua.
+      #
+      # É o mesmo `watcher/Dockerfile` de sempre: ele já traz bash,
+      # postgresql-client, unzip, ripgrep, curl e o `analytics/` inteiro. Com o
+      # watcher fora do compose (D1) o `CMD` dele deixou de importar — quem passa
+      # o comando agora é a DAG.
+      - name: Build da imagem da carga (cnpj-carga)
+        run: |
+          docker build -f watcher/Dockerfile \
+            -t "cnpj-carga:$GITHUB_SHA" \
+            -t cnpj-carga:latest \
+            .
+
+      # A carga não roda mais no deploy; ainda assim o script tem de existir e
+      # ser sintaticamente válido DENTRO da imagem, senão a falha só apareceria
+      # às 22h, na DAG. É também a rede contra o CRLF (ver .gitattributes).
+      - name: Confere o load.sh dentro da imagem da carga
+        run: docker run --rm "cnpj-carga:$GITHUB_SHA" bash -n analytics/load.sh
+
+      - name: Sobe a api (postgres intocado)
         working-directory: /opt/applications/cnpj-analytics/prod
         run: |
           # --no-recreate: se o container do banco já existe, não é tocado nem
@@ -67,10 +94,11 @@ jobs:
           # sem banco.
           docker compose -p "$COMPOSE_PROJECT" up -d --no-recreate postgres-cnpj-rfb
           # --remove-orphans: mata containers do projeto que não existem mais no
-          # compose (ex.: sobras de um serviço renomeado). Sem isto um watcher
-          # órfão continuaria vivo e poderia disparar uma carga em paralelo.
+          # compose. É ele que, neste deploy, encerra o container do watcher
+          # removido pela D1 — não é preciso passo de limpeza. Um watcher órfão
+          # vivo é exatamente o cenário de duas cargas em paralelo (R1).
           docker compose -p "$COMPOSE_PROJECT" up -d --build --no-deps --remove-orphans \
-            api-cnpj-rfb watcher-cnpj-rfb
+            api-cnpj-rfb
           docker compose -p "$COMPOSE_PROJECT" ps
 
       - name: Healthcheck da API

@@ -26,9 +26,11 @@ analytics/        DDL + ETL do schema (SQL puro + load.sh)
   fase2_drop_indices.sql / fase4_indices.sql   o ciclo de índices
   recuperar_indices.sh  rede do trap: recria os índices numa falha
   spec-carga.md     o CONTRATO da carga (leia antes de mexer)
-watcher/          watcher.py — baixa os zips do mês e dispara a carga
+watcher/          watcher.py — BIBLIOTECA de download (retry contra o share da
+                  Receita); o daemon que rodava em loop foi aposentado (D1,
+                  22/09/2026) — ver "Orquestração no Airflow"
 watcher/tests/    testes do watcher (pytest + responses, sem rede)
-airflow/          a DAG que vai SUBSTITUIR o watcher (ver "Orquestração no Airflow")
+airflow/          a DAG que dispara a carga mensal (ver "Orquestração no Airflow")
   spec-dag-carga.md  o CONTRATO da DAG
   dags/cnpj_carga.py a DAG
   pools.json         o pool de 1 slot que impede carga dupla
@@ -172,9 +174,10 @@ temporário.)
 **Não edite o `load.sh` enquanto uma carga roda.** O bash não carrega o script
 inteiro na memória — lê do disco conforme executa. Editar o arquivo em execução
 desloca os offsets e o parser quebra no meio (`unexpected EOF while looking for
-matching`), derrubando a carga depois de horas de COPY. Vale para o `watcher`
-também: durante a janela de carga (a partir das `LOAD_AFTER_HOUR`), mexer no
-arquivo derruba a carga do mês. Edite uma cópia e troque depois.
+matching`), derrubando a carga depois de horas de COPY. Vale também no
+servidor: a DAG do Airflow dispara a carga às 22h (agendamento
+`schedule="0 22 * * *"` em `airflow/dags/cnpj_carga.py`) — mexer no arquivo
+durante essa janela derruba a carga do mês. Edite uma cópia e troque depois.
 
 **`rg` precisa ser o binário do ripgrep, não uma função/alias do shell.** O modo
 `SAMPLE` usa `rg` para casar os CNPJs básicos nos zips de empresas/sócios;
@@ -227,30 +230,34 @@ ou passadas na linha de comando — a CLI tem prioridade sobre o `.env`.
 
 Veja [`TESTING.md`](TESTING.md) para uma bateria de `curl` cobrindo todos os endpoints.
 
-## Atualização automática (watcher)
+## Atualização automática (watcher como biblioteca)
 
-[`watcher/watcher.py`](watcher/watcher.py) verifica o share da Receita a cada
-`CHECK_INTERVAL_H` horas (PROPFIND leve) e, ao detectar um mês novo, dispara o
-`load.sh` — mas só após `LOAD_AFTER_HOUR` (default 22h), para não pesar no horário
-comercial. O mesmo código roda no dev (Windows+WSL) e num servidor Linux nativo:
-`to_wsl_path` só transforma caminhos `C:/...`, então paths POSIX passam intactos.
+Até 22/09/2026, [`watcher/watcher.py`](watcher/watcher.py) rodava como **daemon**:
+um serviço próprio no compose que verificava o share da Receita a cada
+`CHECK_INTERVAL_H` horas e, ao detectar mês novo, disparava o `load.sh` sozinho.
+Esse loop foi **aposentado** (decisão D1 da `spec-dag-carga.md`): quem dispara a
+carga mensal agora é a DAG do Airflow — ver "Orquestração no Airflow" abaixo. As
+variáveis `CHECK_INTERVAL_H` e `LOAD_AFTER_HOUR` morreram junto com o loop; o
+serviço `watcher-cnpj-rfb` não existe mais no `docker-compose.yml`.
 
-| Var | Default (compose) | Efeito |
+O arquivo **continua no repo e continua essencial**, agora só como **biblioteca**:
+o retry contra o share da Receita (a parte cara e testada, ver abaixo) não é
+reimplementado em lugar nenhum — a DAG chama `fetch_available_months` e
+`download_month` de dentro da imagem `cnpj-carga`, que é o próprio
+`watcher/Dockerfile`.
+
+| Função exportada | Quem chama | Para quê |
 |---|---|---|
-| `CNPJ_DB` | `cnpj_full` | Banco de destino passado ao `load.sh` (criado se não existir). |
-| `CNPJ_DATA_DIR` | `/data` | `DATA_DIR` do `load.sh` (onde estão os zips; é um volume). |
-| `CHECK_INTERVAL_H` | `24` | Intervalo entre verificações do share. |
-| `LOAD_AFTER_HOUR` | `22` | Hora mínima (0–23) para iniciar a carga. |
-| `ORCAMENTO_RAM_MB` | `3072` | Teto de RAM da carga (ver tabela do `load.sh`). `TUNE_RAM_GB` continua funcionando. |
-| `CNPJ_WATCHER_LOG` | `watcher/watcher.log` | Arquivo de log. Vazio **desliga** o arquivo; o stdout continua sempre. |
+| `fetch_available_months()` | task `listar_meses` da DAG | Lista os meses publicados no share (PROPFIND) |
+| `download_month(mes)` | task `baixar_zips` da DAG | Baixa os zips do mês, com todo o retry abaixo |
 
-> **O `watcher.py` também é usado como biblioteca.** A DAG do Airflow importa
-> `fetch_available_months` e `download_month` dele — o retry contra o share não
-> é reimplementado em lugar nenhum. Por isso importar o módulo não pode ter
-> efeito colateral: o `import schedule` mora dentro de `main()` (é dependência
-> só do loop do daemon) e o arquivo de log é **melhor esforço** — com o repo
-> montado somente leitura, abrir o `FileHandler` derrubava o import inteiro com
-> `OSError: [Errno 30] Read-only file system`.
+> **Por que importar o módulo não pode ter efeito colateral.** O `import
+> schedule` mora dentro de `main()` — é dependência só do loop do daemon, que a
+> DAG não precisa instalar. O arquivo de log é **melhor esforço**,
+> configurável por `CNPJ_WATCHER_LOG` (vazio desliga; o stdout continua
+> sempre): com o repo montado somente leitura, abrir o `FileHandler` como
+> efeito colateral do import derrubava o import inteiro com `OSError: [Errno
+> 30] Read-only file system`.
 
 ### Por que o download tem retry (gotcha importante)
 
@@ -355,78 +362,50 @@ e não é capricho:
 O `conftest.py` verifica as duas coisas em tempo de execução e aborta com
 mensagem explícita em vez de rodar torto.
 
-### Rodar com Docker (recomendado)
+### Como a carga é disparada hoje
 
-O watcher tem seu próprio serviço no `docker-compose.yml`. Ele fala com o postgres
-**direto por TCP** (`PGHOST=postgres-cnpj-rfb`), então **não precisa do socket do Docker** —
-só do cliente `psql` (já na imagem). Aponte o volume `/data` para a pasta dos zips:
+**Não há mais daemon nem serviço systemd.** Até 22/09/2026 havia um serviço
+`watcher-cnpj-rfb` no compose e um unit systemd
+([`watcher/cnpj-watcher.service`](watcher/cnpj-watcher.service), retirado de uso —
+o arquivo fica no repo só como referência histórica) que rodavam `watcher.py` em
+loop. Os dois foram removidos com o cutover para a DAG do Airflow (D1); ver
+"Orquestração no Airflow" logo abaixo.
 
-```bash
-# se os zips ficam fora do repo, aponte CNPJ_HOST_DATA_DIR no .env
-docker compose up -d postgres-cnpj-rfb watcher-cnpj-rfb
-docker compose logs -f watcher
-```
+Para disparar a carga hoje, dois caminhos:
 
-O compose usa `${CNPJ_HOST_DATA_DIR:-./data}` nos dois bind mounts (PGDATA do
-postgres e `/data` do watcher). Sem a variável, tudo fica em `./data` dentro do
-repo — bom para a máquina local. No servidor ela aponta para fora da árvore de
-deploy, para que o `rsync --delete` do CI/CD não encoste nos dados.
+- **Manual, direto** — a forma mais simples para desenvolvimento: `bash
+  analytics/load.sh` (ver "Como rodar", no topo), ou `docker compose exec
+  postgres-cnpj-rfb ...` se preferir contra o container.
+- **Pela DAG** — a forma de produção: agendada às 22h, ou disparada à mão com
+  `airflow dags trigger cnpj_carga_mensal --conf '{"sample": "20000", "db":
+  "cnpj_t10"}'`. É ela quem chama `watcher.download_month` internamente — o
+  retry contra o share (abaixo) é o mesmo código nos dois casos.
 
-O estado (último mês carregado) persiste no volume `watcher_state`. Na primeira
-subida, se houver mês novo no share, a carga dispara após `LOAD_AFTER_HOUR`.
+## Orquestração no Airflow
 
-### Rodar no host (alternativa, sem container)
-
-Se preferir rodar fora de container, o `load.sh` cai automaticamente para
-`docker compose exec postgres-cnpj-rfb` quando `PGHOST` **não** está setado (o
-serviço vem de `PG_SERVICE`):
-
-```bash
-sudo apt install -y unzip ripgrep            # rg + unzip no PATH; docker já instalado
-python3 -m venv watcher/.venv
-watcher/.venv/bin/pip install -r watcher/requirements.txt
-docker compose up -d postgres-cnpj-rfb
-watcher/.venv/bin/python watcher/watcher.py            # loop (ou --check p/ uma vez)
-```
-
-Como serviço systemd (restart automático, logs no journal), use o unit pronto em
-[`watcher/cnpj-watcher.service`](watcher/cnpj-watcher.service) — ajuste `User=`,
-`WorkingDirectory=` e o caminho do venv, depois:
-
-```bash
-sudo cp watcher/cnpj-watcher.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now cnpj-watcher
-journalctl -u cnpj-watcher -f
-```
-
-## Orquestração no Airflow (em migração)
-
-O `watcher.py` é, no fundo, um scheduler artesanal: `CHECK_INTERVAL_H`,
-`LOAD_AFTER_HOUR`, estado num volume nomeado, timeout próprio. Como o servidor
-já roda Airflow na mesma máquina e na mesma `services-net`, isso está migrando
-para uma DAG. O contrato está em
-[`airflow/spec-dag-carga.md`](airflow/spec-dag-carga.md).
+Quem dispara a carga mensal é a DAG `cnpj_carga_mensal`, não mais um daemon
+próprio (D1, decidido e implementado em 22/09/2026 — ver a seção anterior). O
+contrato está em [`airflow/spec-dag-carga.md`](airflow/spec-dag-carga.md).
 
 ```
-detectar_mes ──▶ baixar_zips ──▶ carregar ──▶ conferir_desfecho
-      │                                            │
-      └─(sem mês novo: pula)                       │
-                                                   ▼
-                                    recuperar_indices  (all_done)
+listar_meses ──▶ detectar_mes ──▶ baixar_zips ──▶ carregar ──▶ conferir_desfecho
+                      │                                             │
+                      └─(sem mês novo: pula)                        │
+                                                                    ▼
+                                                 recuperar_indices  (all_done)
 ```
 
-A DAG **chama**; não reescreve. O retry do download continua no `watcher.py`, as
-seis fases continuam no `load.sh`, e as regras de sanitização continuam no
-transform.
+A DAG **chama**; não reescreve. O retry do download continua no `watcher.py`
+(agora só biblioteca, ver acima), as seis fases continuam no `load.sh`, e as
+regras de sanitização continuam no transform.
 
 | item | onde |
 |---|---|
 | a DAG | `airflow/dags/cnpj_carga.py` (um módulo só: decisões puras no topo, operators embaixo) |
 | o pool de 1 slot | `airflow/pools.json` — `airflow pools import` |
-| os testes | `airflow/tests/` — precisam do Airflow no mesmo interpretador do pytest |
+| os testes | `airflow/tests/` — T1–T12, precisam do Airflow no mesmo interpretador do pytest; T10 é ponta a ponta com zips reais |
 
-Quatro coisas que valem saber antes de mexer:
+Coisas que valem saber antes de mexer:
 
 - **`degradado` é sucesso.** A run lê `carga.resumo`, não o código de saída do
   container: um mês com chave natural repetida termina em `degradado` e **não**
@@ -436,18 +415,24 @@ Quatro coisas que valem saber antes de mexer:
   Airflow no meio de uma carga de 4h não pode matá-la — matá-la entre as Fases 2
   e 4 deixa a base sem índice.
 - **`retries=0` na carga**, de propósito (ver `spec-dag-carga.md`, R8).
-- **O repo tem de estar montado em `CNPJ_REPO_DIR`** dentro do Airflow: é de lá
-  que `detectar_mes` importa o watcher. As outras tasks não precisam — usam a
-  imagem da carga, que já traz o código.
-
-**O watcher ainda está no ar.** O cutover (remover o serviço do compose e do
-`deploy.yml`, e acrescentar o build da imagem `cnpj-carga`) vem depois de a DAG
-rodar o T10 com zips de verdade — por isso os testes T2 estão vermelhos de
-propósito. Enquanto os dois coexistirem, **não ligue a DAG**: seriam dois
-disparadores independentes da mesma carga.
+- **Nenhuma task depende de repo montado no Airflow.** A listagem do share
+  (`listar_meses`) e o download rodam dentro da imagem `cnpj-carga` — decidido
+  assim porque o Airflow do servidor não monta o repo de projeto nenhum (medido
+  em 22/09/2026). Só `detectar_mes` roda em processo, no worker, e só fala com
+  o banco.
+- **Falha alerta por e-mail** (R8), pela conexão SMTP `email_notificacao` que a
+  instalação do Airflow já tem. Destinatário numa Airflow Variable
+  (`cnpj_carga_email_avisos`), não em código.
 
 Para desenvolver, há um Airflow local em `../airflow-local` (3.3.0, a versão do
 servidor), que monta `airflow/dags` deste repo.
+
+**Cutover concluído neste repo; falta o servidor.** O serviço `watcher-cnpj-rfb`
+já saiu do `docker-compose.yml` e do `deploy.yml`, e o CI/CD passou a construir a
+imagem `cnpj-carga`. O que falta é manual, no Airflow do `srv-controladoria`:
+criar o pool `cnpj_carga`, a Variable do e-mail de alerta e copiar a DAG para a
+pasta de DAGs (não versionada, exige root) — passo a passo na seção 9.5 da
+`spec-dag-carga.md`.
 
 ## Endpoints
 
@@ -544,17 +529,28 @@ Caminhos no servidor:
 | `/opt/applications/cnpj-analytics/data` | zips da Receita + PGDATA (~72 GB) — **fora** da árvore de deploy |
 
 Etapas: build da imagem da API (não há testes Go; se não compilar, não sobe) →
-`bash -n load.sh` + `py_compile watcher.py` → `rsync` → `docker compose up -d
---build --no-deps api-cnpj-rfb watcher-cnpj-rfb` → healthcheck em `/healthz`.
+`bash -n load.sh` + `py_compile watcher.py` → build da imagem `cnpj-carga`
+(mesmo `watcher/Dockerfile`, duas tags: `$GITHUB_SHA` e `latest` — é a que o
+`DockerOperator` da DAG executa, sem registry) → `bash -n load.sh` **dentro**
+dessa imagem (pega CRLF antes de a DAG rodar) → `rsync` → `docker compose up -d
+--no-recreate postgres-cnpj-rfb` seguido de `up -d --build --no-deps
+--remove-orphans api-cnpj-rfb` → healthcheck em `/healthz`.
 
 ### Gotchas que o workflow existe para evitar
 
-- **O postgres nunca é recriado.** O `up` de build cita só a API e o watcher e usa
-  `--no-deps`. Recriar o container do banco por causa de uma mudança de compose
-  significaria perder uma carga de horas.
-- **O nome do projeto é fixo (`-p cnpj-analytics`).** O volume nomeado
-  `cnpj-analytics_watcher_state` guarda o último mês carregado; com outro nome de
-  projeto o Docker cria um volume vazio e o watcher dispara uma carga completa.
+- **O postgres nunca é recriado.** O `up -d --no-recreate` cita só o banco; o
+  `up` de build (`--no-deps`) cita só a API. Recriar o container do banco por
+  causa de uma mudança de compose significaria perder uma carga de horas.
+- **`--remove-orphans` é quem encerra containers de serviços removidos do
+  compose** — foi ele que matou o `watcher-cnpj-rfb` no cutover de 22/09/2026
+  (D1). Se algum serviço for removido de novo no futuro, é este flag que evita
+  deixá-lo órfão e vivo.
+- **O volume `cnpj-analytics_watcher_state` (histórico).** Guardava o último mês
+  carregado do daemon antigo; hoje `carga.resumo` no Postgres é a fonte da
+  verdade (R6 da `spec-dag-carga.md`), e o volume não é mais criado. Ele
+  **não** é apagado automaticamente — só com `docker volume rm` à mão, sem
+  pressa. O nome do projeto Compose continua fixo (`-p cnpj-analytics`) por
+  outros motivos (aliases de rede, ver abaixo).
 - **`.env` e `docker-compose.override.yml` são configuração do servidor**, não
   versionados (o override liga o container à rede `services-net`). Estão no
   `--exclude` do rsync, senão o `--delete` os apagaria a cada deploy.
@@ -580,25 +576,25 @@ Dois arquivos vivem só no diretório de deploy e estão no `--exclude` do rsync
 > tentar resolver só com `aliases` no override não funciona, porque o alias com o
 > nome do serviço continua sendo publicado.
 
-> ⚠️ **O orçamento da carga no servidor tem de ser 3 GB, e isso é do `.env` de
-> lá.** O `.env` de desenvolvimento usa `TUNE_RAM_GB=16`, o que faz sentido numa
-> máquina dedicada. O servidor é **compartilhado** — 8 vCPU e 16 GB com Airflow,
-> Kong e Traefik — e **não tem swap**: passar do teto ali não é lentidão, é OOM
-> kill, e a vítima pode ser o Postgres de outra stack. O `.env` do servidor deve
-> ter:
+> ⚠️ **O orçamento da carga no servidor tem de ser 3 GB.** O `.env` de
+> desenvolvimento usa `TUNE_RAM_GB=16`, o que faz sentido numa máquina dedicada.
+> O servidor é **compartilhado** — 8 vCPU e 16 GB com Airflow, Kong e Traefik —
+> e **não tem swap**: passar do teto ali não é lentidão, é OOM kill, e a vítima
+> pode ser o Postgres de outra stack.
 >
-> ```
-> ORCAMENTO_RAM_MB=3072
-> ORCAMENTO_VCPU=4
-> ```
+> **Isso vale de dois jeitos diferentes, e não confundir um pelo outro:**
 >
-> Se `TUNE_RAM_GB` sobrou lá de uma instalação antiga, ele vale
-> `TUNE_RAM_GB × 1024` MB quando `ORCAMENTO_RAM_MB` não está definido — remova-o
-> ao adotar o nome novo, para não ficarem dois valores dizendo a mesma coisa.
->
-> ⚠️ **O `.env` sozinho não basta.** O Compose só repassa ao container do watcher
-> as variáveis listadas no `environment:` do serviço. Se você acrescentar uma
-> variável nova ao `.env` do servidor e ela não estiver lá, o container não a vê.
+> - Para a DAG do Airflow (o caminho de produção desde 22/09/2026), o orçamento
+>   é uma **constante no arquivo** `airflow/dags/cnpj_carga.py`
+>   (`ORCAMENTO_RAM_MB = "3072"`), **não** lido do `.env` — de propósito
+>   (spec R3): um `.env` de máquina de desenvolvimento não pode vazar para o
+>   container da carga em produção.
+> - Para um `bash analytics/load.sh` manual no servidor (fora da DAG), o
+>   default do próprio script já é 3072/4; o risco é só se o `.env` do
+>   servidor tiver `TUNE_RAM_GB=16` (ou `ORCAMENTO_RAM_MB` maior) copiado do
+>   ambiente de dev por engano. Se `TUNE_RAM_GB` sobrou lá de uma instalação
+>   antiga, ele vale `TUNE_RAM_GB × 1024` MB quando `ORCAMENTO_RAM_MB` não está
+>   definido — vale conferir e remover.
 >
 > ⚠️ **O `shared_buffers` NÃO entra pelo deploy.** O workflow sobe o postgres com
 > `--no-recreate` e o resto com `--no-deps`, justamente para nunca derrubar o

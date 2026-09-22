@@ -54,54 +54,20 @@ services:
       postgres-cnpj-rfb:
         condition: service_healthy
 
-  watcher-cnpj-rfb:
-    build:
-      context: .
-      dockerfile: watcher/Dockerfile
-    depends_on:
-      postgres-cnpj-rfb:
-        condition: service_healthy
-    environment:
-      # Conexão direta com o postgres (sem socket do Docker). Ver load.sh.
-      PGHOST: postgres-cnpj-rfb
-      PGPORT: 5432
-      PGUSER: cnpj
-      PGPASSWORD: cnpj
-      # Config do watcher (defaults do watcher.py; ajuste se necessário).
-      CNPJ_DB: cnpj_full
-      CNPJ_DATA_DIR: /data
-      CNPJ_STATE_FILE: /state/state.json
-      CHECK_INTERVAL_H: "24"
-      LOAD_AFTER_HOUR: "22"
-      # Orçamento da carga. O Compose só repassa ao container as variáveis
-      # listadas AQUI — pôr `ORCAMENTO_RAM_MB` no .env do servidor não basta se
-      # ela não aparecer nesta lista. O default 3072 é o teto da seção 7.3 da
-      # spec: o host é compartilhado (8 vCPU e 16 GB com Airflow, Kong e
-      # Traefik) e NÃO tem swap, então passar do teto é OOM kill, não lentidão.
-      ORCAMENTO_RAM_MB: "${ORCAMENTO_RAM_MB:-3072}"
-      ORCAMENTO_VCPU: "${ORCAMENTO_VCPU:-4}"
-      # Vazias por padrão: a Fase 0 as deriva do host. Só defina no .env para
-      # forçar um valor — e lembre que a Fase 0 ainda pode degradá-las se o
-      # host estiver ocupado, que é o comportamento desejado.
-      LOAD_JOBS: "${LOAD_JOBS:-}"
-      IDX_JOBS: "${IDX_JOBS:-}"
-      CARGA_TRANSFORM: "${CARGA_TRANSFORM:-blocos}"
-      REJEITO_LIMIAR_PCT: "${REJEITO_LIMIAR_PCT:-0.1}"
-      CONTAR_DUP_SOCIO: "${CONTAR_DUP_SOCIO:-0}"
-      # Nome antigo do orçamento, em GB. Continua funcionando para instalações
-      # que já o tinham; `ORCAMENTO_RAM_MB` tem prioridade quando os dois vêm.
-      TUNE_RAM_GB: "${TUNE_RAM_GB:-}"
-      # Teto de duração de uma carga completa. 72h porque no servidor a carga
-      # cheia (~122M estabelecimentos) já passou de 20h, o default do load.sh.
-      LOAD_TIMEOUT_H: "${LOAD_TIMEOUT_H:-72}"
-    volumes:
-      # Pasta com os zips da Receita, no HOST. No servidor CNPJ_HOST_DATA_DIR
-      # aponta para fora da árvore de deploy (o rsync do CI não pode encostar
-      # nos ~72 GB); local, o default ./data basta.
-      - ${CNPJ_HOST_DATA_DIR:-./data}:/data
-      # Persiste o estado (último mês carregado) entre restarts.
-      - watcher_state:/state
-    restart: unless-stopped
-
-volumes:
-  watcher_state:
+# O serviço `watcher-cnpj-rfb` foi REMOVIDO em 22/09/2026 (decisão D1 da
+# `airflow/spec-dag-carga.md`): quem dispara a carga mensal agora é a DAG
+# `cnpj_carga_mensal` do Airflow. Ele não ficou desligado nem de fallback —
+# enquanto os dois existissem, o R1 (nunca duas cargas ao mesmo tempo) não
+# valeria nada: `max_active_runs` e o pool do Airflow não enxergam um daemon
+# que roda fora dele.
+#
+# O `watcher/` continua no repo, e é proposital: a DAG importa dele
+# `fetch_available_months` e `download_month` (R2), e o `watcher/Dockerfile` é a
+# imagem `cnpj-carga` que o DockerOperator executa. O que saiu foi o LOOP, não o
+# código.
+#
+# O volume nomeado `cnpj-analytics_watcher_state` (o `state.json`) deixou de ser
+# declarado aqui, mas NÃO é apagado pelo deploy: o `--remove-orphans` mata o
+# container órfão, não o volume. A fonte da verdade sobre o último mês carregado
+# passa a ser `carga.resumo` (R6). Para removê-lo, à mão e sem pressa:
+#     docker volume rm cnpj-analytics_watcher_state

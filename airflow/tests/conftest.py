@@ -80,3 +80,15 @@ def dag(modulo):
 def tarefas(dag):
     """{task_id: objeto da task}."""
     return {t.task_id: t for t in dag.tasks}
+
+
+@pytest.fixture(scope="session")
+def fonte_dag() -> str:
+    """O texto do módulo da DAG.
+
+    Há contrato que só se enxerga no fonte: um template Jinja (`{{ conn... }}`,
+    `{{ var.value... }}`) é uma string até a task rodar, então nenhum atributo
+    do objeto DAG o distingue de um endereço escrito à mão. Não exige Airflow
+    instalado.
+    """
+    return (DAGS_DIR / "cnpj_carga.py").read_text(encoding="utf-8")

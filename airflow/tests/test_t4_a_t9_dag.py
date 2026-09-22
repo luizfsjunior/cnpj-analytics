@@ -168,6 +168,7 @@ def test_t8_orcamento_nao_e_herdado_do_ambiente(modulo, monkeypatch):
 # --------------------------------------------------------------------------
 
 TASKS_ESPERADAS = {
+    "listar_meses",
     "detectar_mes",
     "baixar_zips",
     "carregar",
@@ -202,6 +203,7 @@ def test_t6_recuperacao_chama_o_script_do_repo(raiz):
 @pytest.mark.parametrize(
     "task_id, retries",
     [
+        ("listar_meses", 3),   # herdou "barato, é rede" quando saiu de detectar_mes (9.2)
         ("detectar_mes", 3),
         ("baixar_zips", 1),
         ("carregar", 0),       # R8: retentar 4h de carga às 2h pode ser pior
