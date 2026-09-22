@@ -21,6 +21,7 @@ Para rodar:
     CNPJ_DATA_DIR=/caminho/com/os/zips pytest airflow/tests/test_t10_ponta_a_ponta.py
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -47,8 +48,33 @@ def _tem_docker() -> bool:
     return r.returncode == 0
 
 
+# Como chamar a CLI do Airflow. No servidor ela está no PATH; na máquina de
+# desenvolvimento o Airflow local é um compose (`airflow-local`) e não há nada
+# no PATH do host — daí o `docker exec`. O cwd dentro do container é o repo
+# montado somente leitura: a DAG vem da pasta de dags, não do cwd.
+CONTAINER_AIRFLOW = os.environ.get(
+    "T10_AIRFLOW_CONTAINER", "airflow-local-airflow-scheduler-1"
+)
+REPO_NO_CONTAINER = os.environ.get("T10_REPO_NO_CONTAINER", "/opt/cnpj-analytics")
+
+
+def _cli_airflow() -> list[str] | None:
+    """O prefixo de comando que executa a CLI do Airflow, ou None se não há."""
+    if shutil.which("airflow"):
+        return ["airflow"]
+    if not shutil.which("docker"):
+        return None
+    vivo = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_AIRFLOW],
+        capture_output=True, text=True,
+    )
+    if vivo.returncode == 0 and vivo.stdout.strip() == "true":
+        return ["docker", "exec", "-w", REPO_NO_CONTAINER, CONTAINER_AIRFLOW, "airflow"]
+    return None
+
+
 def _tem_airflow() -> bool:
-    return shutil.which("airflow") is not None
+    return _cli_airflow() is not None
 
 
 pytestmark = [
@@ -57,16 +83,32 @@ pytestmark = [
         reason=f"sem zips da Receita em {DATA_DIR} — defina CNPJ_DATA_DIR para rodar o T10",
     ),
     pytest.mark.skipif(not _tem_docker(), reason="Docker indisponível"),
-    pytest.mark.skipif(not _tem_airflow(), reason="CLI do Airflow indisponível"),
+    pytest.mark.skipif(
+        not _tem_airflow(),
+        reason=(
+            "CLI do Airflow indisponível: nem no PATH, nem no container "
+            f"{CONTAINER_AIRFLOW} (defina T10_AIRFLOW_CONTAINER)"
+        ),
+    ),
 ]
 
 
 def _airflow(*args, **kwargs):
     return subprocess.run(
-        ["airflow", *args],
+        [*_cli_airflow(), *args],
         cwd=str(RAIZ), capture_output=True, text=True,
         encoding="utf-8", errors="replace", **kwargs,
     )
+
+
+def _data_dir_para_dag() -> str:
+    """O `data_dir` como a DAG o espera: o caminho no HOST.
+
+    Ele é a fonte do bind mount do DockerOperator, resolvido pelo daemon do
+    Docker — não um caminho de dentro do container do Airflow. Quem monta a
+    pasta é o host, e lá dentro ela é sempre `/data` (DATA_DIR_CONTAINER).
+    """
+    return DATA_DIR
 
 
 def _psql(sql: str) -> str:
@@ -83,7 +125,11 @@ def _psql(sql: str) -> str:
 @pytest.fixture(scope="module")
 def run_da_dag():
     """Dispara a DAG uma vez em modo amostra e devolve o mês carregado."""
-    cfg = f'{{"sample": "{AMOSTRA}", "db": "{BANCO}", "data_dir": "{DATA_DIR}"}}'
+    # json.dumps, e não f-string: no Windows o DATA_DIR vem com barras
+    # invertidas e o `--conf` montado à mão vira JSON inválido.
+    cfg = json.dumps(
+        {"sample": AMOSTRA, "db": BANCO, "data_dir": _data_dir_para_dag()}
+    )
     r = _airflow("dags", "test", DAG_ID, "2026-09-18", "--conf", cfg)
     assert r.returncode == 0, f"a DAG falhou:\n{r.stdout}\n{r.stderr}"
     return r.stdout
@@ -93,8 +139,8 @@ def test_t10_a_dag_termina_sem_falha(run_da_dag):
     assert "failed" not in run_da_dag.lower()
 
 
-def test_t10_as_cinco_tasks_executaram(run_da_dag):
-    for task in ("detectar_mes", "baixar_zips", "carregar",
+def test_t10_as_seis_tasks_executaram(run_da_dag):
+    for task in ("listar_meses", "detectar_mes", "baixar_zips", "carregar",
                  "conferir_desfecho", "recuperar_indices"):
         assert task in run_da_dag, f"a task {task} não apareceu na execução"
 

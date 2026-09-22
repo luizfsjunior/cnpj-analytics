@@ -1,0 +1,16 @@
+# Quebras de linha
+#
+# Tudo que é executado DENTRO de um container Linux precisa de LF, mesmo quando
+# o checkout é feito no Windows. Sem isto, `core.autocrlf=true` (o default do
+# Git for Windows) entrega o arquivo com CRLF, o `docker build` copia o CRLF
+# para a imagem e o bash morre na primeira linha:
+#
+#     analytics/load.sh: line 58: set: pipefail: invalid option name
+#
+# — porque o argumento lido é `pipefail\r`. Custou uma execução do T10 em
+# 18/09/2026. No servidor não aparecia: lá o runner é Linux.
+*.sh    text eol=lf
+*.sql   text eol=lf
+*.py    text eol=lf
+Dockerfile text eol=lf
+*.yml   text eol=lf
